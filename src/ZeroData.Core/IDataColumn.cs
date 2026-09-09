@@ -24,6 +24,21 @@ namespace ZeroData.Core
         int Length { get; }
 
         /// <summary>
+        /// Gets whether this column contains any null values.
+        /// </summary>
+        bool HasNulls { get; }
+
+        /// <summary>
+        /// Returns true if the element at the specified index is null.
+        /// </summary>
+        bool IsNull(int index);
+
+        /// <summary>
+        /// Sets the element at the specified index as null.
+        /// </summary>
+        void SetNull(int index);
+
+        /// <summary>
         /// Gets the untyped value at the specified row index.
         /// </summary>
         object? GetValue(int index);

@@ -14,7 +14,9 @@ namespace ZeroData.Core.Arrow
         Double = 4,
         Utf8 = 5,
         Boolean = 6,
-        Date64 = 7
+        Date64 = 7,
+        Decimal128 = 8,
+        Timestamp = 9
     }
 
     /// <summary>

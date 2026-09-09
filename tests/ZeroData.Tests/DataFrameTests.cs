@@ -165,5 +165,67 @@ namespace ZeroData.Tests
             Assert.Equal(102, provider.GetValue(1, 0));
             Assert.Equal("Fail", provider.GetValue(1, 1));
         }
+
+        [Fact]
+        public void DataFrame_RowView_ZeroAllocationEnumeration()
+        {
+            var df = new DataFrame();
+            df.AddColumn(new DataColumn<int>("Id", new[] { 1, 2, 3 }));
+            df.AddColumn(new DataColumn<decimal>("Price", new[] { 19.99m, 49.50m, 9.95m }));
+            df.AddColumn(new DataColumn<string>("Item", new[] { "Bolt", "Nut", "Washer" }));
+
+            int count = 0;
+            decimal totalPrice = 0m;
+
+            foreach (var row in df.Rows)
+            {
+                Assert.Equal(count + 1, row.GetInt("Id"));
+                Assert.Equal(count + 1, row.GetInt(0));
+                totalPrice += row.GetDecimal("Price");
+                Assert.NotNull(row.GetString("Item"));
+                Assert.False(row.IsNull("Item"));
+                count++;
+            }
+
+            Assert.Equal(3, count);
+            Assert.Equal(79.44m, totalPrice);
+        }
+
+        [Fact]
+        public void DataFrame_AdoNet_DataTableAndDataReaderRoundtrip()
+        {
+            // 1. Create source System.Data.DataTable with nulls
+            var dt = new System.Data.DataTable("Products");
+            dt.Columns.Add("Code", typeof(string));
+            dt.Columns.Add("Qty", typeof(int));
+            dt.Columns.Add("Cost", typeof(decimal));
+
+            dt.Rows.Add("P001", 10, 150.25m);
+            dt.Rows.Add("P002", DBNull.Value, 85.00m);
+            dt.Rows.Add(DBNull.Value, 50, DBNull.Value);
+
+            // 2. Convert from DataTable to DataFrame
+            var df = DataFrame.FromDataTable(dt);
+            Assert.Equal(3, df.RowCount);
+            Assert.Equal(3, df.ColumnCount);
+            Assert.Equal("P001", df.Column<string>("Code")[0]);
+            Assert.True(df.GetColumn("Qty").IsNull(1));
+            Assert.True(df.GetColumn("Code").IsNull(2));
+            Assert.True(df.GetColumn("Cost").IsNull(2));
+
+            // 3. Convert back to DataTable
+            var exportedDt = df.ToDataTable();
+            Assert.Equal(3, exportedDt.Rows.Count);
+            Assert.Equal("P001", exportedDt.Rows[0]["Code"]);
+            Assert.Equal(DBNull.Value, exportedDt.Rows[1]["Qty"]);
+            Assert.Equal(DBNull.Value, exportedDt.Rows[2]["Code"]);
+
+            // 4. Ingest via IDataReader
+            using var reader = dt.CreateDataReader();
+            var dfFromReader = DataFrame.FromDataReader(reader);
+            Assert.Equal(3, dfFromReader.RowCount);
+            Assert.Equal(150.25m, dfFromReader.Column<decimal>("Cost")[0]);
+            Assert.True(dfFromReader.GetColumn("Qty").IsNull(1));
+        }
     }
 }

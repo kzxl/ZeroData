@@ -1,9 +1,13 @@
 using System;
 using System.Collections.Generic;
+using System.Data;
 using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
+using ZeroPrimitives;
+using ZeroPrimitives.Parsing;
+using ZeroPrimitives.Text;
 
 namespace ZeroData.Core
 {
@@ -91,6 +95,14 @@ namespace ZeroData.Core
         }
 
         public bool HasColumn(string name) => _columns.ContainsKey(name);
+
+        public IDataColumn GetColumnByIndex(int index)
+        {
+            if ((uint)index >= (uint)_columnOrder.Count) throw new ArgumentOutOfRangeException(nameof(index));
+            return _columns[_columnOrder[index]];
+        }
+
+        public RowEnumerable Rows => new RowEnumerable(this);
 
         #region Slicing & Filtering
 
@@ -260,105 +272,188 @@ namespace ZeroData.Core
 
         public string ToCsv(char delimiter = ',')
         {
-            var sb = new StringBuilder();
-            sb.AppendLine(string.Join(delimiter.ToString(), _columnOrder));
-
-            for (int r = 0; r < _rowCount; r++)
+            var vsb = new ValueStringBuilder(stackalloc char[1024]);
+            try
             {
                 for (int c = 0; c < _columnOrder.Count; c++)
                 {
-                    if (c > 0) sb.Append(delimiter);
-                    var val = _columns[_columnOrder[c]].GetValue(r);
-                    if (val is string s && (s.Contains(delimiter) || s.Contains('"') || s.Contains('\n')))
-                    {
-                        sb.Append($"\"{s.Replace("\"", "\"\"")}\"");
-                    }
-                    else
-                    {
-                        sb.Append(Convert.ToString(val, CultureInfo.InvariantCulture));
-                    }
+                    if (c > 0) vsb.Append(delimiter);
+                    vsb.Append(_columnOrder[c]);
                 }
-                sb.AppendLine();
-            }
+                vsb.Append("\r\n");
 
-            return sb.ToString();
+                for (int r = 0; r < _rowCount; r++)
+                {
+                    for (int c = 0; c < _columnOrder.Count; c++)
+                    {
+                        if (c > 0) vsb.Append(delimiter);
+                        var col = _columns[_columnOrder[c]];
+                        if (col.IsNull(r)) continue;
+
+                        var val = col.GetValue(r);
+                        if (val is string s)
+                        {
+                            if (s.IndexOf(delimiter) >= 0 || s.IndexOf('"') >= 0 || s.IndexOf('\n') >= 0 || s.IndexOf('\r') >= 0)
+                            {
+                                vsb.Append('"');
+                                for (int i = 0; i < s.Length; i++)
+                                {
+                                    if (s[i] == '"') vsb.Append('"');
+                                    vsb.Append(s[i]);
+                                }
+                                vsb.Append('"');
+                            }
+                            else
+                            {
+                                vsb.Append(s);
+                            }
+                        }
+                        else if (val != null)
+                        {
+                            vsb.Append(FastConvert.ToStringOrDefault(val));
+                        }
+                    }
+                    vsb.Append("\r\n");
+                }
+
+                return vsb.ToString();
+            }
+            finally
+            {
+                vsb.Dispose();
+            }
         }
 
         public static DataFrame FromCsv(string csvContent, char delimiter = ',')
         {
             if (string.IsNullOrWhiteSpace(csvContent)) return new DataFrame();
 
-            using var reader = new StringReader(csvContent);
-            string? headerLine = reader.ReadLine();
-            if (headerLine == null) return new DataFrame();
+            var rowEnumerator = FastCsvParser.EnumerateRows(csvContent.AsSpan()).GetEnumerator();
+            if (!rowEnumerator.MoveNext()) return new DataFrame();
 
-            var headers = ParseCsvLine(headerLine, delimiter);
-            var rawColumns = new List<string>[headers.Count];
-            for (int i = 0; i < headers.Count; i++) rawColumns[i] = new List<string>();
-
-            string? line;
-            while ((line = reader.ReadLine()) != null)
+            var firstRow = rowEnumerator.Current;
+            var headerList = new List<string>();
+            foreach (var cell in FastCsvParser.EnumerateCells(firstRow, delimiter))
             {
-                if (string.IsNullOrWhiteSpace(line)) continue;
-                var parts = ParseCsvLine(line, delimiter);
-                for (int i = 0; i < headers.Count; i++)
+                headerList.Add(cell.ToString().Trim());
+            }
+
+            if (headerList.Count == 0) return new DataFrame();
+
+            var rawColumns = new List<string>[headerList.Count];
+            for (int i = 0; i < headerList.Count; i++) rawColumns[i] = new List<string>();
+
+            char[]? rentedBuf = null;
+            Span<char> stackBuf = stackalloc char[512];
+            try
+            {
+                while (rowEnumerator.MoveNext())
                 {
-                    rawColumns[i].Add(i < parts.Count ? parts[i] : "");
+                    var rowSpan = rowEnumerator.Current;
+                    if (rowSpan.Trim().Length == 0) continue;
+
+                    int colIdx = 0;
+                    foreach (var cell in FastCsvParser.EnumerateCells(rowSpan, delimiter))
+                    {
+                        if (colIdx < headerList.Count)
+                        {
+                            var trimmedCell = cell.Trim();
+                            if (trimmedCell.Length >= 2 && trimmedCell[0] == '"' && trimmedCell[trimmedCell.Length - 1] == '"')
+                            {
+                                Span<char> destBuf = stackBuf;
+                                if (trimmedCell.Length > destBuf.Length)
+                                {
+                                    if (rentedBuf == null || rentedBuf.Length < trimmedCell.Length)
+                                    {
+                                        if (rentedBuf != null) System.Buffers.ArrayPool<char>.Shared.Return(rentedBuf);
+                                        rentedBuf = System.Buffers.ArrayPool<char>.Shared.Rent(trimmedCell.Length);
+                                    }
+                                    destBuf = rentedBuf;
+                                }
+                                var unquoted = FastCsvParser.Unquote(trimmedCell, destBuf, out int written);
+                                rawColumns[colIdx].Add(unquoted.ToString());
+                            }
+                            else
+                            {
+                                rawColumns[colIdx].Add(trimmedCell.ToString());
+                            }
+                        }
+                        colIdx++;
+                    }
+
+                    while (colIdx < headerList.Count)
+                    {
+                        rawColumns[colIdx].Add(string.Empty);
+                        colIdx++;
+                    }
                 }
+            }
+            finally
+            {
+                if (rentedBuf != null) System.Buffers.ArrayPool<char>.Shared.Return(rentedBuf);
             }
 
             var df = new DataFrame();
-            for (int c = 0; c < headers.Count; c++)
+            for (int c = 0; c < headerList.Count; c++)
             {
                 var strings = rawColumns[c];
-                // Infer type: double, int, or string
-                if (strings.Count > 0 && strings.All(s => double.TryParse(s, NumberStyles.Any, CultureInfo.InvariantCulture, out _)))
-                {
-                    var doubles = strings.Select(s => double.Parse(s, CultureInfo.InvariantCulture)).ToArray();
-                    df.AddColumn(new DataColumn<double>(headers[c], doubles));
-                }
-                else
-                {
-                    df.AddColumn(new DataColumn<string>(headers[c], strings.ToArray()));
-                }
+                var col = InferAndCreateColumn(headerList[c], strings);
+                df.AddColumn(col);
             }
 
             return df;
         }
 
-        private static List<string> ParseCsvLine(string line, char delimiter)
+        private static IDataColumn InferAndCreateColumn(string name, List<string> strings)
         {
-            var result = new List<string>();
-            var sb = new StringBuilder();
-            bool inQuotes = false;
+            if (strings.Count == 0) return new DataColumn<string>(name, 0);
 
-            for (int i = 0; i < line.Length; i++)
+            bool isInt = true;
+            bool isDouble = true;
+            int nonEmptyCount = 0;
+
+            for (int i = 0; i < strings.Count; i++)
             {
-                char c = line[i];
-                if (c == '"')
+                var s = strings[i].Trim();
+                if (s.Length == 0) continue;
+                nonEmptyCount++;
+
+                if (isInt && !int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out _)) isInt = false;
+                if (isDouble && !double.TryParse(s, NumberStyles.Float | NumberStyles.AllowThousands, CultureInfo.InvariantCulture, out _)) isDouble = false;
+            }
+
+            if (nonEmptyCount > 0)
+            {
+                if (isInt)
                 {
-                    if (inQuotes && i + 1 < line.Length && line[i + 1] == '"')
+                    var col = new DataColumn<int>(name, strings.Count);
+                    for (int i = 0; i < strings.Count; i++)
                     {
-                        sb.Append('"');
-                        i++; // Skip escaped quote
+                        var s = strings[i].Trim();
+                        if (s.Length == 0) col.SetNull(i);
+                        else col.SetValid(i, int.Parse(s, CultureInfo.InvariantCulture));
                     }
-                    else
+                    return col;
+                }
+                if (isDouble)
+                {
+                    var col = new DataColumn<double>(name, strings.Count);
+                    for (int i = 0; i < strings.Count; i++)
                     {
-                        inQuotes = !inQuotes;
+                        var s = strings[i].Trim();
+                        if (s.Length == 0) col.SetNull(i);
+                        else col.SetValid(i, double.Parse(s, CultureInfo.InvariantCulture));
                     }
-                }
-                else if (c == delimiter && !inQuotes)
-                {
-                    result.Add(sb.ToString().Trim());
-                    sb.Clear();
-                }
-                else
-                {
-                    sb.Append(c);
+                    return col;
                 }
             }
-            result.Add(sb.ToString().Trim());
-            return result;
+
+            var strCol = new DataColumn<string>(name, strings.Count);
+            for (int i = 0; i < strings.Count; i++)
+            {
+                strCol.SetValue(i, strings[i]);
+            }
+            return strCol;
         }
 
         #endregion

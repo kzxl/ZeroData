@@ -133,6 +133,27 @@ namespace ZeroData.Core.Arrow
                         metaWriter.Write(byteLen);
                         for (int r = 0; r < col.Length; r++) bodyWriter.Write(span[r].Ticks);
                     }
+                    else if (typeId == ArrowTypeId.Decimal128 && col is DataColumn<decimal> cDec)
+                    {
+                        var span = cDec.AsReadOnlySpan();
+                        int byteLen = col.Length * 16;
+                        metaWriter.Write(byteLen);
+                        for (int r = 0; r < col.Length; r++)
+                        {
+                            int[] bits = decimal.GetBits(span[r]);
+                            bodyWriter.Write(bits[0]);
+                            bodyWriter.Write(bits[1]);
+                            bodyWriter.Write(bits[2]);
+                            bodyWriter.Write(bits[3]);
+                        }
+                    }
+                    else if (typeId == ArrowTypeId.Timestamp && col is DataColumn<DateTimeOffset> cDto)
+                    {
+                        var span = cDto.AsReadOnlySpan();
+                        int byteLen = col.Length * sizeof(long);
+                        metaWriter.Write(byteLen);
+                        for (int r = 0; r < col.Length; r++) bodyWriter.Write(span[r].ToUnixTimeMilliseconds());
+                    }
                     else if (typeId == ArrowTypeId.Utf8)
                     {
                         // Variable-length: Offsets + UTF-8 payload
@@ -206,7 +227,30 @@ namespace ZeroData.Core.Arrow
             if (type == typeof(string)) return ArrowTypeId.Utf8;
             if (type == typeof(bool)) return ArrowTypeId.Boolean;
             if (type == typeof(DateTime)) return ArrowTypeId.Date64;
+            if (type == typeof(decimal)) return ArrowTypeId.Decimal128;
+            if (type == typeof(DateTimeOffset)) return ArrowTypeId.Timestamp;
             return ArrowTypeId.Utf8;
         }
+
+#pragma warning disable CA1416
+        /// <summary>
+        /// Writes a DataFrame to a named Memory-Mapped File for zero-copy inter-process exchange.
+        /// Returns the MemoryMappedFile instance so the caller can control its lifetime.
+        /// </summary>
+        public static System.IO.MemoryMappedFiles.MemoryMappedFile WriteToMemoryMappedFile(string mapName, DataFrame df)
+        {
+            if (string.IsNullOrEmpty(mapName)) throw new ArgumentNullException(nameof(mapName));
+            if (df == null) throw new ArgumentNullException(nameof(df));
+
+            byte[] bytes = Serialize(df);
+            var mmf = System.IO.MemoryMappedFiles.MemoryMappedFile.CreateOrOpen(mapName, bytes.Length + 4);
+            using (var accessor = mmf.CreateViewAccessor())
+            {
+                accessor.Write(0, bytes.Length);
+                accessor.WriteArray(4, bytes, 0, bytes.Length);
+            }
+            return mmf;
+        }
+#pragma warning restore CA1416
     }
 }

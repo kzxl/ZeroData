@@ -130,6 +130,26 @@ namespace ZeroData.Core.Arrow
                                         columns.Add(new DataColumn<DateTime>(field.Name, dtData));
                                         break;
 
+                                    case ArrowTypeId.Decimal128:
+                                        decimal[] decData = new decimal[rowCount];
+                                        int[] bits = new int[4];
+                                        for (int r = 0; r < rowCount; r++)
+                                        {
+                                            bits[0] = reader.ReadInt32();
+                                            bits[1] = reader.ReadInt32();
+                                            bits[2] = reader.ReadInt32();
+                                            bits[3] = reader.ReadInt32();
+                                            decData[r] = new decimal(bits);
+                                        }
+                                        columns.Add(new DataColumn<decimal>(field.Name, decData));
+                                        break;
+
+                                    case ArrowTypeId.Timestamp:
+                                        DateTimeOffset[] dtoData = new DateTimeOffset[rowCount];
+                                        for (int r = 0; r < rowCount; r++) dtoData[r] = DateTimeOffset.FromUnixTimeMilliseconds(reader.ReadInt64());
+                                        columns.Add(new DataColumn<DateTimeOffset>(field.Name, dtoData));
+                                        break;
+
                                     case ArrowTypeId.Utf8:
                                         int offsetCount = rowCount + 1;
                                         int[] offsets = new int[offsetCount];
@@ -174,5 +194,24 @@ namespace ZeroData.Core.Arrow
                 reader.ReadBytes(pad);
             }
         }
+
+#pragma warning disable CA1416
+        /// <summary>
+        /// Reads a DataFrame from a named Memory-Mapped File with zero external process copying.
+        /// </summary>
+        public static DataFrame ReadFromMemoryMappedFile(string mapName)
+        {
+            if (string.IsNullOrEmpty(mapName)) throw new ArgumentNullException(nameof(mapName));
+
+            using (var mmf = System.IO.MemoryMappedFiles.MemoryMappedFile.OpenExisting(mapName))
+            using (var accessor = mmf.CreateViewAccessor())
+            {
+                int len = accessor.ReadInt32(0);
+                byte[] bytes = new byte[len];
+                accessor.ReadArray(4, bytes, 0, len);
+                return Deserialize(bytes);
+            }
+        }
+#pragma warning restore CA1416
     }
 }

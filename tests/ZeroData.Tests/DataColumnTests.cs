@@ -45,5 +45,50 @@ namespace ZeroData.Tests
             Assert.Equal("SensorA", filtered[0]);
             Assert.Equal("SensorA", filtered[1]);
         }
+
+        [Fact]
+        public void DataColumn_NullBitmap_TracksValidityWithoutAllocation()
+        {
+            var col = new DataColumn<int>("Stock", new[] { 100, 200, 300, 400 });
+            Assert.False(col.HasNulls);
+            Assert.False(col.IsNull(0));
+
+            col.SetNull(1);
+            Assert.True(col.HasNulls);
+            Assert.False(col.IsNull(0));
+            Assert.True(col.IsNull(1));
+            Assert.Null(col.GetValue(1));
+            Assert.Equal(100, col.GetValue(0));
+
+            // Slicing preserves null state
+            var slice = (DataColumn<int>)col.Slice(0, 2);
+            Assert.True(slice.HasNulls);
+            Assert.False(slice.IsNull(0));
+            Assert.True(slice.IsNull(1));
+
+            // Filter preserves null state
+            var filtered = (DataColumn<int>)col.Filter(new[] { 1, 2 });
+            Assert.True(filtered.HasNulls);
+            Assert.True(filtered.IsNull(0));
+            Assert.False(filtered.IsNull(1));
+            Assert.Equal(300, filtered.GetValue(1));
+        }
+
+        [Fact]
+        public void DataColumn_DecimalAggregations_AreExactAndZeroBoxing()
+        {
+            var col = new DataColumn<decimal>("InvoiceTotal", new[] { 1500.50m, 2500.75m, 1000.25m });
+            Assert.Equal(5001.50m, col.SumAsDecimal());
+            Assert.Equal(1667.1666666666666666666666667m, col.AverageAsDecimal());
+            Assert.Equal(1000.25m, col.MinAsDecimal());
+            Assert.Equal(2500.75m, col.MaxAsDecimal());
+
+            // With nulls
+            col.SetNull(1);
+            Assert.Equal(2500.75m, col.SumAsDecimal());
+            Assert.Equal(1250.375m, col.AverageAsDecimal());
+            Assert.Equal(1000.25m, col.MinAsDecimal());
+            Assert.Equal(1500.50m, col.MaxAsDecimal());
+        }
     }
 }

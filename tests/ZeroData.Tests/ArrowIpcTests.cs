@@ -60,5 +60,43 @@ namespace ZeroData.Tests
             Assert.Equal("Cảm biến nhiệt độ", descCol[1]);
             Assert.Equal("高速カメラ", descCol[2]);
         }
+
+        [Fact]
+        public void TestArrowIpc_RoundTrip_DecimalAndTimestamp()
+        {
+            var now = DateTimeOffset.UtcNow;
+            var df = new DataFrame(
+                new DataColumn<decimal>("Revenue", new[] { 1234567.89m, 9876543.21m, 500.00m }),
+                new DataColumn<DateTimeOffset>("EventTime", new[] { now, now.AddMinutes(5), now.AddHours(1) })
+            );
+
+            byte[] ipcBytes = ArrowIpcWriter.Serialize(df);
+            var roundTrip = ArrowIpcReader.Deserialize(ipcBytes);
+
+            Assert.Equal(3, roundTrip.RowCount);
+            var revCol = roundTrip.Column<decimal>("Revenue");
+            var timeCol = roundTrip.Column<DateTimeOffset>("EventTime");
+
+            Assert.Equal(1234567.89m, revCol[0]);
+            Assert.Equal(9876543.21m, revCol[1]);
+            Assert.Equal(now.ToUnixTimeMilliseconds(), timeCol[0].ToUnixTimeMilliseconds());
+        }
+
+        [Fact]
+        public void TestArrowIpc_MemoryMappedFile_ZeroCopyExchange()
+        {
+            string mapName = "ZeroData_Ipc_TestMap_" + Guid.NewGuid().ToString("N");
+            var df = new DataFrame(
+                new DataColumn<int>("BatchId", new[] { 1001, 1002 }),
+                new DataColumn<double>("Value", new[] { 42.5, 99.9 })
+            );
+
+            using var mmf = ArrowIpcWriter.WriteToMemoryMappedFile(mapName, df);
+            var readDf = ArrowIpcReader.ReadFromMemoryMappedFile(mapName);
+
+            Assert.Equal(2, readDf.RowCount);
+            Assert.Equal(1001, readDf.Column<int>("BatchId")[0]);
+            Assert.Equal(99.9, readDf.Column<double>("Value")[1]);
+        }
     }
 }
