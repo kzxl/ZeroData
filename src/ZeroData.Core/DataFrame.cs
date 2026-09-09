@@ -22,7 +22,7 @@ namespace ZeroData.Core
     /// High-throughput in-memory Columnar DataFrame.
     /// Stores data in contiguous typed column vectors for zero GC pause analytics, time-series resampling, and fast UI binding.
     /// </summary>
-    public class DataFrame
+    public partial class DataFrame
     {
         private readonly Dictionary<string, IDataColumn> _columns = new Dictionary<string, IDataColumn>(StringComparer.OrdinalIgnoreCase);
         private readonly List<string> _columnOrder = new List<string>();
