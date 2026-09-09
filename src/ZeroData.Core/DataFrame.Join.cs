@@ -31,6 +31,7 @@ namespace ZeroData.Core
 
         /// <summary>
         /// Performs a relational hash join with another DataFrame matching leftKey to rightKey.
+        /// Utilizes unboxed typed hash maps for common primitive and string keys to eliminate GC allocations.
         /// </summary>
         public DataFrame Join(
             DataFrame other,
@@ -47,65 +48,50 @@ namespace ZeroData.Core
             var lCol = GetColumn(leftKey);
             var rCol = other.GetColumn(rightKey);
 
-            // 1. Build Phase: Build hash index on right table key
-            var rightMap = new Dictionary<object, List<int>>();
-            for (int r = 0; r < other.RowCount; r++)
-            {
-                var val = rCol.GetValue(r);
-                if (val == null) continue;
+            List<int> leftIndices;
+            List<int> rightIndices;
 
-                if (!rightMap.TryGetValue(val, out var list))
-                {
-                    list = new List<int>();
-                    rightMap[val] = list;
-                }
-                list.Add(r);
+            // Fast path: typed hash join when key columns share the same primitive or string type
+            if (lCol is DataColumn<int> lInt && rCol is DataColumn<int> rInt)
+            {
+                HashJoinTyped(lInt, rInt, RowCount, other.RowCount, joinType, null, out leftIndices, out rightIndices);
+            }
+            else if (lCol is DataColumn<long> lLng && rCol is DataColumn<long> rLng)
+            {
+                HashJoinTyped(lLng, rLng, RowCount, other.RowCount, joinType, null, out leftIndices, out rightIndices);
+            }
+            else if (lCol is DataColumn<string> lStr && rCol is DataColumn<string> rStr)
+            {
+                HashJoinTyped(lStr, rStr, RowCount, other.RowCount, joinType, StringComparer.Ordinal, out leftIndices, out rightIndices);
+            }
+            else if (lCol is DataColumn<decimal> lDec && rCol is DataColumn<decimal> rDec)
+            {
+                HashJoinTyped(lDec, rDec, RowCount, other.RowCount, joinType, null, out leftIndices, out rightIndices);
+            }
+            else if (lCol is DataColumn<Guid> lGuid && rCol is DataColumn<Guid> rGuid)
+            {
+                HashJoinTyped(lGuid, rGuid, RowCount, other.RowCount, joinType, null, out leftIndices, out rightIndices);
+            }
+            else if (lCol is DataColumn<DateTime> lDt && rCol is DataColumn<DateTime> rDt)
+            {
+                HashJoinTyped(lDt, rDt, RowCount, other.RowCount, joinType, null, out leftIndices, out rightIndices);
+            }
+            else if (lCol is DataColumn<double> lDbl && rCol is DataColumn<double> rDbl)
+            {
+                HashJoinTyped(lDbl, rDbl, RowCount, other.RowCount, joinType, null, out leftIndices, out rightIndices);
+            }
+            else if (lCol is DataColumn<float> lFlt && rCol is DataColumn<float> rFlt)
+            {
+                HashJoinTyped(lFlt, rFlt, RowCount, other.RowCount, joinType, null, out leftIndices, out rightIndices);
+            }
+            else
+            {
+                // General fallback for mixed or custom types
+                HashJoinFallback(lCol, rCol, RowCount, other.RowCount, joinType, out leftIndices, out rightIndices);
             }
 
-            // 2. Probe Phase: Walk left table and match
-            var leftIndices = new List<int>();
-            var rightIndices = new List<int>();
-            var rightMatched = (joinType == JoinType.Right || joinType == JoinType.FullOuter) ? new bool[other.RowCount] : null;
-
-            for (int l = 0; l < RowCount; l++)
-            {
-                var val = lCol.GetValue(l);
-                bool matched = false;
-
-                if (val != null && rightMap.TryGetValue(val, out var matches))
-                {
-                    matched = true;
-                    for (int m = 0; m < matches.Count; m++)
-                    {
-                        int rIdx = matches[m];
-                        leftIndices.Add(l);
-                        rightIndices.Add(rIdx);
-                        if (rightMatched != null) rightMatched[rIdx] = true;
-                    }
-                }
-
-                if (!matched && (joinType == JoinType.Left || joinType == JoinType.FullOuter))
-                {
-                    leftIndices.Add(l);
-                    rightIndices.Add(-1); // Null right row
-                }
-            }
-
-            // 3. Unmatched Right Rows for Right and FullOuter Joins
-            if (rightMatched != null)
-            {
-                for (int r = 0; r < other.RowCount; r++)
-                {
-                    if (!rightMatched[r])
-                    {
-                        leftIndices.Add(-1); // Null left row
-                        rightIndices.Add(r);
-                    }
-                }
-            }
-
-            // 4. Materialization Phase: Build Resulting Columns
-            var resultCols = new List<IDataColumn>();
+            // Materialization Phase: Build Resulting Columns with preserved null validity
+            var resultCols = new List<IDataColumn>(ColumnCount + other.ColumnCount);
 
             // Add left columns
             for (int i = 0; i < ColumnCount; i++)
@@ -146,97 +132,250 @@ namespace ZeroData.Core
             return new DataFrame(resultCols.ToArray());
         }
 
-        private static IDataColumn GatherColumn(IDataColumn src, string name, List<int> indices)
+        private static void HashJoinTyped<TKey>(
+            DataColumn<TKey> lCol,
+            DataColumn<TKey> rCol,
+            int leftRowCount,
+            int rightRowCount,
+            JoinType joinType,
+            IEqualityComparer<TKey>? comparer,
+            out List<int> leftIndices,
+            out List<int> rightIndices)
+            where TKey : notnull
         {
-            if (src is DataColumn<int> cInt)
+            // 1. Build Phase: unboxed hash table
+            var rightMap = comparer != null
+                ? new Dictionary<TKey, List<int>>(rightRowCount, comparer)
+                : new Dictionary<TKey, List<int>>(rightRowCount);
+
+            var rData = rCol.RawData;
+            bool rHasNulls = rCol.HasNulls;
+
+            for (int r = 0; r < rightRowCount; r++)
             {
-                var data = new int[indices.Count];
-                var span = cInt.AsReadOnlySpan();
-                for (int i = 0; i < indices.Count; i++)
+                if (rHasNulls && rCol.IsNull(r)) continue;
+                TKey val = rData[r];
+                if (val == null) continue;
+
+                if (!rightMap.TryGetValue(val, out var list))
                 {
-                    int idx = indices[i];
-                    data[i] = idx >= 0 ? span[idx] : default;
+                    list = new List<int>(1);
+                    rightMap[val] = list;
                 }
-                return new DataColumn<int>(name, data);
-            }
-            if (src is DataColumn<double> cDbl)
-            {
-                var data = new double[indices.Count];
-                var span = cDbl.AsReadOnlySpan();
-                for (int i = 0; i < indices.Count; i++)
-                {
-                    int idx = indices[i];
-                    data[i] = idx >= 0 ? span[idx] : default;
-                }
-                return new DataColumn<double>(name, data);
-            }
-            if (src is DataColumn<float> cFlt)
-            {
-                var data = new float[indices.Count];
-                var span = cFlt.AsReadOnlySpan();
-                for (int i = 0; i < indices.Count; i++)
-                {
-                    int idx = indices[i];
-                    data[i] = idx >= 0 ? span[idx] : default;
-                }
-                return new DataColumn<float>(name, data);
-            }
-            if (src is DataColumn<long> cLng)
-            {
-                var data = new long[indices.Count];
-                var span = cLng.AsReadOnlySpan();
-                for (int i = 0; i < indices.Count; i++)
-                {
-                    int idx = indices[i];
-                    data[i] = idx >= 0 ? span[idx] : default;
-                }
-                return new DataColumn<long>(name, data);
-            }
-            if (src is DataColumn<string> cStr)
-            {
-                var data = new string?[indices.Count];
-                for (int i = 0; i < indices.Count; i++)
-                {
-                    int idx = indices[i];
-                    data[i] = idx >= 0 ? (string?)cStr.GetValue(idx) : null;
-                }
-                return new DataColumn<string>(name, data!);
-            }
-            if (src is DataColumn<DateTime> cDt)
-            {
-                var data = new DateTime[indices.Count];
-                var span = cDt.AsReadOnlySpan();
-                for (int i = 0; i < indices.Count; i++)
-                {
-                    int idx = indices[i];
-                    data[i] = idx >= 0 ? span[idx] : default;
-                }
-                return new DataColumn<DateTime>(name, data);
-            }
-            if (src is DataColumn<bool> cBool)
-            {
-                var data = new bool[indices.Count];
-                var span = cBool.AsReadOnlySpan();
-                for (int i = 0; i < indices.Count; i++)
-                {
-                    int idx = indices[i];
-                    data[i] = idx >= 0 ? span[idx] : default;
-                }
-                return new DataColumn<bool>(name, data);
+                list.Add(r);
             }
 
-            // Fallback for any other type
+            // 2. Probe Phase
+            int initialCapacity = Math.Max(leftRowCount, rightRowCount);
+            leftIndices = new List<int>(initialCapacity);
+            rightIndices = new List<int>(initialCapacity);
+            var rightMatched = (joinType == JoinType.Right || joinType == JoinType.FullOuter) ? new bool[rightRowCount] : null;
+
+            var lData = lCol.RawData;
+            bool lHasNulls = lCol.HasNulls;
+
+            for (int l = 0; l < leftRowCount; l++)
+            {
+                if (lHasNulls && lCol.IsNull(l))
+                {
+                    if (joinType == JoinType.Left || joinType == JoinType.FullOuter)
+                    {
+                        leftIndices.Add(l);
+                        rightIndices.Add(-1);
+                    }
+                    continue;
+                }
+
+                TKey val = lData[l];
+                if (val == null)
+                {
+                    if (joinType == JoinType.Left || joinType == JoinType.FullOuter)
+                    {
+                        leftIndices.Add(l);
+                        rightIndices.Add(-1);
+                    }
+                    continue;
+                }
+
+                if (rightMap.TryGetValue(val, out var matches))
+                {
+                    for (int m = 0; m < matches.Count; m++)
+                    {
+                        int rIdx = matches[m];
+                        leftIndices.Add(l);
+                        rightIndices.Add(rIdx);
+                        if (rightMatched != null) rightMatched[rIdx] = true;
+                    }
+                }
+                else if (joinType == JoinType.Left || joinType == JoinType.FullOuter)
+                {
+                    leftIndices.Add(l);
+                    rightIndices.Add(-1);
+                }
+            }
+
+            // 3. Unmatched Right Rows for Right and FullOuter Joins
+            if (rightMatched != null)
+            {
+                for (int r = 0; r < rightRowCount; r++)
+                {
+                    if (!rightMatched[r])
+                    {
+                        leftIndices.Add(-1);
+                        rightIndices.Add(r);
+                    }
+                }
+            }
+        }
+
+        private static void HashJoinFallback(
+            IDataColumn lCol,
+            IDataColumn rCol,
+            int leftRowCount,
+            int rightRowCount,
+            JoinType joinType,
+            out List<int> leftIndices,
+            out List<int> rightIndices)
+        {
+            var rightMap = new Dictionary<object, List<int>>(rightRowCount);
+            for (int r = 0; r < rightRowCount; r++)
+            {
+                if (rCol.IsNull(r)) continue;
+                var val = rCol.GetValue(r);
+                if (val == null) continue;
+
+                if (!rightMap.TryGetValue(val, out var list))
+                {
+                    list = new List<int>(1);
+                    rightMap[val] = list;
+                }
+                list.Add(r);
+            }
+
+            int initialCapacity = Math.Max(leftRowCount, rightRowCount);
+            leftIndices = new List<int>(initialCapacity);
+            rightIndices = new List<int>(initialCapacity);
+            var rightMatched = (joinType == JoinType.Right || joinType == JoinType.FullOuter) ? new bool[rightRowCount] : null;
+
+            for (int l = 0; l < leftRowCount; l++)
+            {
+                if (lCol.IsNull(l))
+                {
+                    if (joinType == JoinType.Left || joinType == JoinType.FullOuter)
+                    {
+                        leftIndices.Add(l);
+                        rightIndices.Add(-1);
+                    }
+                    continue;
+                }
+
+                var val = lCol.GetValue(l);
+                bool matched = false;
+
+                if (val != null && rightMap.TryGetValue(val, out var matches))
+                {
+                    matched = true;
+                    for (int m = 0; m < matches.Count; m++)
+                    {
+                        int rIdx = matches[m];
+                        leftIndices.Add(l);
+                        rightIndices.Add(rIdx);
+                        if (rightMatched != null) rightMatched[rIdx] = true;
+                    }
+                }
+
+                if (!matched && (joinType == JoinType.Left || joinType == JoinType.FullOuter))
+                {
+                    leftIndices.Add(l);
+                    rightIndices.Add(-1);
+                }
+            }
+
+            if (rightMatched != null)
+            {
+                for (int r = 0; r < rightRowCount; r++)
+                {
+                    if (!rightMatched[r])
+                    {
+                        leftIndices.Add(-1);
+                        rightIndices.Add(r);
+                    }
+                }
+            }
+        }
+
+        private static IDataColumn GatherColumn(IDataColumn src, string name, List<int> indices)
+        {
+            if (src is DataColumn<int> cInt) return GatherColumnTyped(cInt, name, indices);
+            if (src is DataColumn<long> cLng) return GatherColumnTyped(cLng, name, indices);
+            if (src is DataColumn<double> cDbl) return GatherColumnTyped(cDbl, name, indices);
+            if (src is DataColumn<float> cFlt) return GatherColumnTyped(cFlt, name, indices);
+            if (src is DataColumn<decimal> cDec) return GatherColumnTyped(cDec, name, indices);
+            if (src is DataColumn<string> cStr) return GatherColumnTyped(cStr, name, indices);
+            if (src is DataColumn<DateTime> cDt) return GatherColumnTyped(cDt, name, indices);
+            if (src is DataColumn<Guid> cGuid) return GatherColumnTyped(cGuid, name, indices);
+            if (src is DataColumn<bool> cBool) return GatherColumnTyped(cBool, name, indices);
+            if (src is DataColumn<short> cShort) return GatherColumnTyped(cShort, name, indices);
+            if (src is DataColumn<byte> cByte) return GatherColumnTyped(cByte, name, indices);
+
+            // Fallback for custom unhandled types
+            int count = indices.Count;
             Type colType = typeof(DataColumn<>).MakeGenericType(src.DataType);
-            Array arr = Array.CreateInstance(src.DataType, indices.Count);
-            for (int i = 0; i < indices.Count; i++)
+            Array arr = Array.CreateInstance(src.DataType, count);
+            var col = (IDataColumn)Activator.CreateInstance(colType, name, arr)!;
+
+            bool srcHasNulls = src.HasNulls;
+            for (int i = 0; i < count; i++)
             {
                 int idx = indices[i];
                 if (idx >= 0)
                 {
-                    arr.SetValue(src.GetValue(idx), i);
+                    if (srcHasNulls && src.IsNull(idx))
+                    {
+                        col.SetNull(i);
+                    }
+                    else
+                    {
+                        col.SetValue(i, src.GetValue(idx));
+                    }
+                }
+                else
+                {
+                    col.SetNull(i);
                 }
             }
-            return (IDataColumn)Activator.CreateInstance(colType, name, arr)!;
+            return col;
+        }
+
+        private static IDataColumn GatherColumnTyped<T>(DataColumn<T> src, string name, List<int> indices)
+        {
+            int count = indices.Count;
+            var data = new T[count];
+            var srcData = src.RawData;
+            bool srcHasNulls = src.HasNulls;
+
+            var col = new DataColumn<T>(name, data);
+            for (int i = 0; i < count; i++)
+            {
+                int idx = indices[i];
+                if (idx >= 0)
+                {
+                    if (srcHasNulls && src.IsNull(idx))
+                    {
+                        col.SetNull(i);
+                    }
+                    else
+                    {
+                        data[i] = srcData[idx];
+                    }
+                }
+                else
+                {
+                    col.SetNull(i);
+                }
+            }
+            return col;
         }
     }
 }
+

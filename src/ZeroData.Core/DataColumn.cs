@@ -22,6 +22,8 @@ namespace ZeroData.Core
         public int Length => _length;
         public bool HasNulls => _hasNulls;
         public ReadOnlySpan<byte> NullBitmap => _nullBitmap != null ? new ReadOnlySpan<byte>(_nullBitmap, 0, (_length + 7) >> 3) : ReadOnlySpan<byte>.Empty;
+        internal T[] RawData => _data;
+        internal byte[]? RawNullBitmap => _nullBitmap;
 
         public DataColumn(string name, int initialCapacity = 0)
         {
