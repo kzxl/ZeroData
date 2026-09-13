@@ -76,6 +76,7 @@ namespace ZeroData.Sql
             set => _parameters[key] = value;
         }
 
+        public IEnumerable<string> ParameterNames => _parameters.Keys;
         public ICollection<string> Keys => _parameters.Keys;
         public ICollection<object> Values => _parameters.Values;
         public int Count => _parameters.Count;

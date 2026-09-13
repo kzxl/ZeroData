@@ -6,6 +6,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -1258,6 +1259,137 @@ namespace ZeroData.Sql
             Expression<Func<T, bool>> predicate, CancellationToken ct = default)
         {
             return await ExecuteSelectAsync(selector, predicate, ct).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Asynchronously streams all matching rows one by one without buffering the entire table in memory.
+        /// Ideal for large datasets (100k - 10M records) to maintain a flat memory footprint.
+        /// </summary>
+        public async IAsyncEnumerable<T> ToStreamAsync([EnumeratorCancellation] CancellationToken ct = default)
+        {
+            await _context.EnsureConnectionOpenAsync(ct).ConfigureAwait(false);
+            var mapping = MappingCache.GetMapping<T>();
+            var orderBy = _orderByClauses;
+            var skip = _skip;
+            var take = _take;
+            var rawFragments = _rawWhereFragments;
+            var predicate = CombinePending(null);
+            ResetQueryState();
+
+            var (fullSql, dp) = BuildWhereSql(mapping, predicate, orderBy, skip, take, rawFragments);
+
+            await foreach (var item in _context.Connection.QueryStreamAsync<T>(fullSql, dp,
+                transaction: _context.Transaction, commandTimeout: _context.CommandTimeout, cancellationToken: ct, converters: _context.Converters).ConfigureAwait(false))
+            {
+                yield return item;
+            }
+        }
+
+        /// <summary>
+        /// Constant-time Keyset (Seek) pagination.
+        /// Bypasses OFFSET/FETCH by seeking directly on an indexed key column (e.g. Id > lastSeenId).
+        /// Stable, constant-time performance across deep pagination pages.
+        /// </summary>
+        public List<T> Seek<TKey>(
+            Expression<Func<T, TKey>> keySelector,
+            TKey lastSeenKey,
+            int pageSize,
+            bool ascending = true)
+        {
+            if (keySelector == null) throw new ArgumentNullException(nameof(keySelector));
+            if (pageSize <= 0) throw new ArgumentOutOfRangeException(nameof(pageSize), "Page size must be greater than zero.");
+
+            var colName = ExtractColumnName(keySelector);
+            var mapping = MappingCache.GetMapping<T>();
+            var dialect = _context.Dialect;
+            var quotedCol = dialect.QuoteIdentifier(colName);
+            var op = ascending ? ">" : "<";
+            var orderDir = ascending ? "ASC" : "DESC";
+            var paramName = "@seekKey";
+
+            var (fullSql, dp) = BuildWhereSql(mapping, CombinePending(null), null, null, null, _rawWhereFragments);
+            ResetQueryState();
+
+            if (dp == null) dp = new DynamicParameters();
+            dp.Add(paramName, lastSeenKey);
+
+            var seekCondition = $"{quotedCol} {op} {paramName}";
+            var hasWhere = fullSql.IndexOf(" WHERE ", StringComparison.OrdinalIgnoreCase) >= 0;
+            var sqlWithSeek = hasWhere ? $"{fullSql} AND ({seekCondition})" : $"{fullSql} WHERE {seekCondition}";
+
+            var provider = dialect.ProviderName;
+            var usesLimit = provider == "SQLite" || provider == "MySQL" || provider == "PostgreSQL";
+
+            string querySql;
+            if (usesLimit)
+            {
+                querySql = $"{sqlWithSeek} ORDER BY {quotedCol} {orderDir} LIMIT {pageSize}";
+            }
+            else
+            {
+                querySql = sqlWithSeek.Replace("SELECT ", $"SELECT TOP ({pageSize}) ") + $" ORDER BY {quotedCol} {orderDir}";
+            }
+
+            _context.EnsureConnectionOpen();
+            var results = _context.Connection.Query<T>(querySql, dp,
+                transaction: _context.Transaction, commandTimeout: _context.CommandTimeout, converters: _context.Converters).ToList();
+
+            TrackResults(results, mapping);
+            LoadAssociations(results, mapping);
+            return results;
+        }
+
+        /// <summary>
+        /// Asynchronously executes constant-time Keyset (Seek) pagination.
+        /// </summary>
+        public async Task<List<T>> SeekAsync<TKey>(
+            Expression<Func<T, TKey>> keySelector,
+            TKey lastSeenKey,
+            int pageSize,
+            bool ascending = true,
+            CancellationToken ct = default)
+        {
+            if (keySelector == null) throw new ArgumentNullException(nameof(keySelector));
+            if (pageSize <= 0) throw new ArgumentOutOfRangeException(nameof(pageSize), "Page size must be greater than zero.");
+
+            var colName = ExtractColumnName(keySelector);
+            var mapping = MappingCache.GetMapping<T>();
+            var dialect = _context.Dialect;
+            var quotedCol = dialect.QuoteIdentifier(colName);
+            var op = ascending ? ">" : "<";
+            var orderDir = ascending ? "ASC" : "DESC";
+            var paramName = "@seekKey";
+
+            var (fullSql, dp) = BuildWhereSql(mapping, CombinePending(null), null, null, null, _rawWhereFragments);
+            ResetQueryState();
+
+            if (dp == null) dp = new DynamicParameters();
+            dp.Add(paramName, lastSeenKey);
+
+            var seekCondition = $"{quotedCol} {op} {paramName}";
+            var hasWhere = fullSql.IndexOf(" WHERE ", StringComparison.OrdinalIgnoreCase) >= 0;
+            var sqlWithSeek = hasWhere ? $"{fullSql} AND ({seekCondition})" : $"{fullSql} WHERE {seekCondition}";
+
+            var provider = dialect.ProviderName;
+            var usesLimit = provider == "SQLite" || provider == "MySQL" || provider == "PostgreSQL";
+
+            string querySql;
+            if (usesLimit)
+            {
+                querySql = $"{sqlWithSeek} ORDER BY {quotedCol} {orderDir} LIMIT {pageSize}";
+            }
+            else
+            {
+                querySql = sqlWithSeek.Replace("SELECT ", $"SELECT TOP ({pageSize}) ") + $" ORDER BY {quotedCol} {orderDir}";
+            }
+
+            await _context.EnsureConnectionOpenAsync(ct).ConfigureAwait(false);
+            var results = (await _context.Connection.QueryAsync<T>(querySql, dp,
+                transaction: _context.Transaction, commandTimeout: _context.CommandTimeout, cancellationToken: ct, converters: _context.Converters).ConfigureAwait(false)).ToList();
+
+            TrackResults(results, mapping);
+            await LoadAssociationsAsync(results, mapping, ct).ConfigureAwait(false);
+            return results;
         }
 
         #endregion

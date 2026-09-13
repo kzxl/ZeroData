@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Data.Common;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using ZeroData.Sql.Execution;
@@ -239,6 +240,100 @@ namespace ZeroData.Sql
             finally
             {
                 if (wasClosed) connection.Close();
+            }
+        }
+
+        /// <summary>
+        /// Asynchronously streams query results one row at a time as an IAsyncEnumerable.
+        /// Bypasses in-memory list allocations, maintaining a constant/flat memory footprint
+        /// even when streaming millions of records.
+        /// </summary>
+        public static async IAsyncEnumerable<T> QueryStreamAsync<T>(
+            this IDbConnection connection,
+            string sql,
+            object param = null,
+            IDbTransaction transaction = null,
+            int? commandTimeout = null,
+            CommandType? commandType = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default,
+            ValueConverterCollection converters = null)
+        {
+            if (connection == null) throw new ArgumentNullException(nameof(connection));
+            if (string.IsNullOrEmpty(sql)) throw new ArgumentNullException(nameof(sql));
+
+            bool wasClosed = connection.State == ConnectionState.Closed;
+            if (wasClosed)
+            {
+                if (connection is DbConnection dbConn)
+                    await dbConn.OpenAsync(cancellationToken).ConfigureAwait(false);
+                else
+                    connection.Open();
+            }
+
+            try
+            {
+                using (var cmd = PrepareCommand(connection, sql, param, transaction, commandTimeout, commandType, converters))
+                {
+                    if (cmd is DbCommand dbCmd)
+                    {
+                        using (var reader = await dbCmd.ExecuteReaderAsync(CommandBehavior.Default, cancellationToken).ConfigureAwait(false))
+                        {
+                            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                            {
+                                yield return EntityMaterializer.Materialize<T>(reader, converters);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        using (var reader = cmd.ExecuteReader())
+                        {
+                            while (reader.Read())
+                            {
+                                cancellationToken.ThrowIfCancellationRequested();
+                                yield return EntityMaterializer.Materialize<T>(reader, converters);
+                            }
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                if (wasClosed) connection.Close();
+            }
+        }
+
+        /// <summary>
+        /// Asynchronously streams query results in batches/chunks of the specified size.
+        /// Ideal for high-throughput ETL, batch writing, and bulk pipelines.
+        /// </summary>
+        public static async IAsyncEnumerable<IReadOnlyList<T>> QueryChunksAsync<T>(
+            this IDbConnection connection,
+            string sql,
+            int chunkSize = 5000,
+            object param = null,
+            IDbTransaction transaction = null,
+            int? commandTimeout = null,
+            CommandType? commandType = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default,
+            ValueConverterCollection converters = null)
+        {
+            if (chunkSize <= 0) throw new ArgumentOutOfRangeException(nameof(chunkSize), "Chunk size must be greater than zero.");
+
+            var chunk = new List<T>(chunkSize);
+            await foreach (var item in connection.QueryStreamAsync<T>(sql, param, transaction, commandTimeout, commandType, cancellationToken, converters).ConfigureAwait(false))
+            {
+                chunk.Add(item);
+                if (chunk.Count >= chunkSize)
+                {
+                    yield return chunk;
+                    chunk = new List<T>(chunkSize);
+                }
+            }
+
+            if (chunk.Count > 0)
+            {
+                yield return chunk;
             }
         }
 
