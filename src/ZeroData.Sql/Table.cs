@@ -6,6 +6,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -311,6 +312,154 @@ namespace ZeroData.Sql
 
             DetachMatchingTracked(predicate);
             return rows;
+        }
+
+        /// <summary>
+        /// Updates all entities matching the specified predicate directly on the database server.
+        /// Accepts an anonymous object, dictionary, or member factory expression.
+        /// Example: table.UpdateWhere(x => x.Status == "Pending", new { Status = "Processed" });
+        /// </summary>
+        public int UpdateWhere(Expression<Func<T, bool>> predicate, object updateValues)
+        {
+            if (predicate == null) throw new ArgumentNullException(nameof(predicate));
+            if (updateValues == null) throw new ArgumentNullException(nameof(updateValues));
+
+            var (sql, dp) = BuildUpdateWhereSql(predicate, updateValues);
+            _context.EnsureConnectionOpen();
+            var rows = _context.Connection.Execute(sql, dp,
+                transaction: _context.Transaction, commandTimeout: _context.CommandTimeout);
+
+            DetachMatchingTracked(predicate);
+            return rows;
+        }
+
+        /// <summary>
+        /// Asynchronously updates all entities matching the specified predicate directly on the database server.
+        /// Accepts an anonymous object, dictionary, or member factory expression.
+        /// </summary>
+        public async Task<int> UpdateWhereAsync(Expression<Func<T, bool>> predicate, object updateValues, CancellationToken ct = default)
+        {
+            if (predicate == null) throw new ArgumentNullException(nameof(predicate));
+            if (updateValues == null) throw new ArgumentNullException(nameof(updateValues));
+
+            var (sql, dp) = BuildUpdateWhereSql(predicate, updateValues);
+            await _context.EnsureConnectionOpenAsync(ct).ConfigureAwait(false);
+            var rows = await _context.Connection.ExecuteAsync(new CommandDefinition(sql, dp,
+                transaction: _context.Transaction, commandTimeout: _context.CommandTimeout, cancellationToken: ct)).ConfigureAwait(false);
+
+            DetachMatchingTracked(predicate);
+            return rows;
+        }
+
+        /// <summary>
+        /// Updates all entities matching the specified predicate directly on the server using an expression factory.
+        /// Example: table.UpdateWhere(x => x.Status == "Pending", x => new Order { Status = "Processed" });
+        /// </summary>
+        public int UpdateWhere(Expression<Func<T, bool>> predicate, Expression<Func<T, T>> updateFactory)
+            => UpdateWhere(predicate, (object)updateFactory);
+
+        /// <summary>
+        /// Asynchronously updates all entities matching the specified predicate directly on the server using an expression factory.
+        /// </summary>
+        public Task<int> UpdateWhereAsync(Expression<Func<T, bool>> predicate, Expression<Func<T, T>> updateFactory, CancellationToken ct = default)
+            => UpdateWhereAsync(predicate, (object)updateFactory, ct);
+
+        private (string Sql, DynamicParameters Parameters) BuildUpdateWhereSql(Expression<Func<T, bool>> predicate, object updateValues)
+        {
+            var mapping = MappingCache.GetMapping<T>();
+            var dialect = _context.Dialect;
+            var table = SqlGenerator.QuoteTableName(mapping.TableName, dialect);
+            var builder = new WhereBuilder(mapping, dialect);
+            var (whereSql, parameters) = builder.Build(predicate);
+
+            var values = ExtractUpdateValues(updateValues, mapping);
+            var setClauses = new List<string>();
+            var dp = new DynamicParameters();
+
+            if (parameters != null)
+            {
+                foreach (var kv in parameters) dp.Add(kv.Key, kv.Value);
+            }
+
+            int idx = 0;
+            foreach (var kvp in values)
+            {
+                var col = mapping.Columns.FirstOrDefault(c => string.Equals(c.Property.Name, kvp.Key, StringComparison.OrdinalIgnoreCase)
+                                                           || string.Equals(c.ColumnName, kvp.Key, StringComparison.OrdinalIgnoreCase));
+                if (col == null || col.IsPrimaryKey || col.IsDbGenerated) continue;
+
+                var paramName = $"@upd_{idx++}_{col.Property.Name}";
+                setClauses.Add($"{dialect.QuoteIdentifier(col.ColumnName)} = {paramName}");
+                dp.Add(paramName, kvp.Value);
+            }
+
+            if (setClauses.Count == 0)
+                throw new InvalidOperationException("No valid updatable columns were provided for UpdateWhere.");
+
+            var sql = $"UPDATE {table} SET {string.Join(", ", setClauses)} WHERE {whereSql}";
+            return (sql, dp);
+        }
+
+        private static IDictionary<string, object> ExtractUpdateValues(object updateValues, EntityMapping mapping)
+        {
+            var result = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+
+            if (updateValues is IDictionary<string, object> dict)
+            {
+                foreach (var kvp in dict) result[kvp.Key] = kvp.Value;
+                return result;
+            }
+
+            if (updateValues is LambdaExpression lambda)
+            {
+                if (lambda.Body is MemberInitExpression init)
+                {
+                    foreach (var binding in init.Bindings)
+                    {
+                        if (binding is MemberAssignment assignment)
+                        {
+                            result[assignment.Member.Name] = EvaluateExpression(assignment.Expression);
+                        }
+                    }
+                    return result;
+                }
+                else if (lambda.Body is NewExpression newExpr && newExpr.Members != null)
+                {
+                    for (int i = 0; i < newExpr.Members.Count; i++)
+                    {
+                        result[newExpr.Members[i].Name] = EvaluateExpression(newExpr.Arguments[i]);
+                    }
+                    return result;
+                }
+                throw new NotSupportedException($"Unsupported update expression body: {lambda.Body.GetType().Name}. Expected MemberInit or NewExpression.");
+            }
+
+            var type = updateValues.GetType();
+            foreach (var prop in type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
+            {
+                if (!prop.CanRead || prop.GetIndexParameters().Length > 0) continue;
+                result[prop.Name] = prop.GetValue(updateValues, null);
+            }
+
+            return result;
+        }
+
+        private static object EvaluateExpression(Expression expr)
+        {
+            if (expr == null) return null;
+            if (expr is ConstantExpression c) return c.Value;
+            if (expr is MemberExpression member && member.Expression is ConstantExpression innerConst)
+            {
+                if (member.Member is FieldInfo field) return field.GetValue(innerConst.Value);
+                if (member.Member is PropertyInfo prop) return prop.GetValue(innerConst.Value, null);
+            }
+            if (expr is UnaryExpression u && u.NodeType == ExpressionType.Convert)
+            {
+                return EvaluateExpression(u.Operand);
+            }
+
+            var lambda = Expression.Lambda(expr);
+            return lambda.Compile().DynamicInvoke();
         }
 
         private void DetachMatchingTracked(Expression<Func<T, bool>> predicate)

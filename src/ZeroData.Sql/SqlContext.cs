@@ -9,6 +9,7 @@ using System.Data;
 using System.Data.Common;
 using System.IO;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -351,15 +352,41 @@ namespace ZeroData.Sql
         /// Deletes all entities matching the specified predicate directly on the server without loading them into memory.
         /// Respects SoftDeleteAttribute unless forceHardDelete is true.
         /// </summary>
-        public int DeleteWhere<T>(System.Linq.Expressions.Expression<Func<T, bool>> predicate, bool forceHardDelete = false) where T : class
+        public int DeleteWhere<T>(Expression<Func<T, bool>> predicate, bool forceHardDelete = false) where T : class
             => GetTable<T>().DeleteWhere(predicate, forceHardDelete);
 
         /// <summary>
         /// Asynchronously deletes all entities matching the specified predicate directly on the server.
         /// Respects SoftDeleteAttribute unless forceHardDelete is true.
         /// </summary>
-        public Task<int> DeleteWhereAsync<T>(System.Linq.Expressions.Expression<Func<T, bool>> predicate, bool forceHardDelete = false, CancellationToken ct = default) where T : class
+        public Task<int> DeleteWhereAsync<T>(Expression<Func<T, bool>> predicate, bool forceHardDelete = false, CancellationToken ct = default) where T : class
             => GetTable<T>().DeleteWhereAsync(predicate, forceHardDelete, ct);
+
+        /// <summary>
+        /// Updates all entities matching the specified predicate directly on the database server.
+        /// Accepts an anonymous object or dictionary of values.
+        /// </summary>
+        public int UpdateWhere<T>(Expression<Func<T, bool>> predicate, object updateValues) where T : class
+            => GetTable<T>().UpdateWhere(predicate, updateValues);
+
+        /// <summary>
+        /// Asynchronously updates all entities matching the specified predicate directly on the database server.
+        /// Accepts an anonymous object or dictionary of values.
+        /// </summary>
+        public Task<int> UpdateWhereAsync<T>(Expression<Func<T, bool>> predicate, object updateValues, CancellationToken ct = default) where T : class
+            => GetTable<T>().UpdateWhereAsync(predicate, updateValues, ct);
+
+        /// <summary>
+        /// Updates all entities matching the specified predicate directly on the database server using an expression factory.
+        /// </summary>
+        public int UpdateWhere<T>(Expression<Func<T, bool>> predicate, Expression<Func<T, T>> updateFactory) where T : class
+            => GetTable<T>().UpdateWhere(predicate, updateFactory);
+
+        /// <summary>
+        /// Asynchronously updates all entities matching the specified predicate directly on the database server using an expression factory.
+        /// </summary>
+        public Task<int> UpdateWhereAsync<T>(Expression<Func<T, bool>> predicate, Expression<Func<T, T>> updateFactory, CancellationToken ct = default) where T : class
+            => GetTable<T>().UpdateWhereAsync(predicate, updateFactory, ct);
 
         /// <summary>
         /// Detaches an entity from change tracking.
@@ -507,7 +534,6 @@ namespace ZeroData.Sql
             await EnsureConnectionOpenAsync(ct).ConfigureAwait(false);
             return await BulkOperations.BulkDeleteAsync(Connection, entities, Transaction, Dialect, ct).ConfigureAwait(false);
         }
-
         #endregion
 
         #region Transaction Helpers (Phase 9)
