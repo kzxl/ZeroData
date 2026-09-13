@@ -5,6 +5,7 @@ using System.Data;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using ZeroData.Core;
 using ZeroData.Sql.Dialects;
 using ZeroData.Sql.Execution;
 using ZeroData.Sql.Mapping;
@@ -119,6 +120,114 @@ namespace ZeroData.Sql
                         var col = insertColumns[j];
                         var paramName = $"@p{i}_{col.Property.Name}";
                         var val = col.Getter != null ? col.Getter(chunk[i]) : col.Property.GetValue(chunk[i]);
+                        parameters.Add(paramName, val);
+                        paramNames.Add(paramName);
+                    }
+                    parameterRows.Add(paramNames);
+                }
+
+                var sql = d.GenerateBulkInsertSql(table, quotedCols, parameterRows);
+                totalAffected += await connection.ExecuteAsync(new CommandDefinition(sql, parameters,
+                    transaction: transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
+            }
+
+            return totalAffected;
+        }
+
+        /// <summary>
+        /// Inserts data from a columnar DataFrame directly into the database without creating POCO entities.
+        /// Uses SqlBulkCopy for SQL Server when available, or batched multi-row INSERTs.
+        /// </summary>
+        public static int BulkInsert(IDbConnection connection, DataFrame dataFrame, string tableName,
+            IDbTransaction transaction = null, ISqlDialect dialect = null)
+        {
+            if (connection == null) throw new ArgumentNullException(nameof(connection));
+            if (dataFrame == null) throw new ArgumentNullException(nameof(dataFrame));
+            if (string.IsNullOrEmpty(tableName)) throw new ArgumentNullException(nameof(tableName));
+            if (dataFrame.RowCount == 0 || dataFrame.ColumnCount == 0) return 0;
+
+            if (TryGetSqlConnection(connection, out var sqlConn))
+            {
+                if (TrySqlBulkCopyDataFrame(sqlConn, dataFrame, tableName, transaction, out var affected))
+                    return affected;
+            }
+
+            var d = dialect ?? SqlGenerator.DefaultDialect;
+            var table = SqlGenerator.QuoteTableName(tableName, d);
+            var colCount = dataFrame.ColumnCount;
+            var colNames = dataFrame.ColumnNames;
+            var quotedCols = colNames.Select(c => d.QuoteIdentifier(c)).ToList();
+            var rowsPerChunk = Math.Max(1, MaxParametersPerCommand / Math.Max(1, colCount));
+            int totalAffected = 0;
+
+            for (int start = 0; start < dataFrame.RowCount; start += rowsPerChunk)
+            {
+                int chunkCount = Math.Min(rowsPerChunk, dataFrame.RowCount - start);
+                var parameters = new DynamicParameters();
+                var parameterRows = new List<IReadOnlyList<string>>(chunkCount);
+
+                for (int i = 0; i < chunkCount; i++)
+                {
+                    int rowIdx = start + i;
+                    var paramNames = new List<string>(colCount);
+                    for (int j = 0; j < colCount; j++)
+                    {
+                        var col = dataFrame.GetColumnByIndex(j);
+                        var paramName = $"@df_{i}_{j}";
+                        var val = col.IsNull(rowIdx) ? DBNull.Value : col.GetValue(rowIdx);
+                        parameters.Add(paramName, val);
+                        paramNames.Add(paramName);
+                    }
+                    parameterRows.Add(paramNames);
+                }
+
+                var sql = d.GenerateBulkInsertSql(table, quotedCols, parameterRows);
+                totalAffected += connection.Execute(sql, parameters, transaction);
+            }
+
+            return totalAffected;
+        }
+
+        /// <summary>
+        /// Asynchronously inserts data from a columnar DataFrame directly into the database without creating POCO entities.
+        /// </summary>
+        public static async Task<int> BulkInsertAsync(IDbConnection connection, DataFrame dataFrame, string tableName,
+            IDbTransaction transaction = null, ISqlDialect dialect = null, CancellationToken cancellationToken = default)
+        {
+            if (connection == null) throw new ArgumentNullException(nameof(connection));
+            if (dataFrame == null) throw new ArgumentNullException(nameof(dataFrame));
+            if (string.IsNullOrEmpty(tableName)) throw new ArgumentNullException(nameof(tableName));
+            if (dataFrame.RowCount == 0 || dataFrame.ColumnCount == 0) return 0;
+
+            if (TryGetSqlConnection(connection, out var sqlConn))
+            {
+                var (success, affected) = await TrySqlBulkCopyDataFrameAsync(sqlConn, dataFrame, tableName, transaction, cancellationToken).ConfigureAwait(false);
+                if (success) return affected;
+            }
+
+            var d = dialect ?? SqlGenerator.DefaultDialect;
+            var table = SqlGenerator.QuoteTableName(tableName, d);
+            var colCount = dataFrame.ColumnCount;
+            var colNames = dataFrame.ColumnNames;
+            var quotedCols = colNames.Select(c => d.QuoteIdentifier(c)).ToList();
+            var rowsPerChunk = Math.Max(1, MaxParametersPerCommand / Math.Max(1, colCount));
+            int totalAffected = 0;
+
+            for (int start = 0; start < dataFrame.RowCount; start += rowsPerChunk)
+            {
+                int chunkCount = Math.Min(rowsPerChunk, dataFrame.RowCount - start);
+                var parameters = new DynamicParameters();
+                var parameterRows = new List<IReadOnlyList<string>>(chunkCount);
+
+                for (int i = 0; i < chunkCount; i++)
+                {
+                    int rowIdx = start + i;
+                    var paramNames = new List<string>(colCount);
+                    for (int j = 0; j < colCount; j++)
+                    {
+                        var col = dataFrame.GetColumnByIndex(j);
+                        var paramName = $"@df_{i}_{j}";
+                        var val = col.IsNull(rowIdx) ? DBNull.Value : col.GetValue(rowIdx);
                         parameters.Add(paramName, val);
                         paramNames.Add(paramName);
                     }
@@ -443,6 +552,66 @@ namespace ZeroData.Sql
                         await bulkCopy.WriteToServerAsync(reader, ct).ConfigureAwait(false);
                     }
                     return (true, entities.Count);
+                }
+            }
+            catch
+            {
+                return (false, 0);
+            }
+        }
+
+        private static bool TrySqlBulkCopyDataFrame(
+            Microsoft.Data.SqlClient.SqlConnection sqlConn,
+            DataFrame dataFrame,
+            string tableName,
+            IDbTransaction transaction,
+            out int affected)
+        {
+            try
+            {
+                var sqlTx = transaction as Microsoft.Data.SqlClient.SqlTransaction;
+                using (var bulkCopy = new Microsoft.Data.SqlClient.SqlBulkCopy(sqlConn, Microsoft.Data.SqlClient.SqlBulkCopyOptions.CheckConstraints | Microsoft.Data.SqlClient.SqlBulkCopyOptions.FireTriggers, sqlTx))
+                {
+                    bulkCopy.DestinationTableName = tableName;
+                    foreach (var colName in dataFrame.ColumnNames)
+                    {
+                        bulkCopy.ColumnMappings.Add(colName, colName);
+                    }
+
+                    var dt = dataFrame.ToDataTable(tableName);
+                    bulkCopy.WriteToServer(dt);
+                    affected = dataFrame.RowCount;
+                    return true;
+                }
+            }
+            catch
+            {
+                affected = 0;
+                return false;
+            }
+        }
+
+        private static async Task<(bool Success, int Affected)> TrySqlBulkCopyDataFrameAsync(
+            Microsoft.Data.SqlClient.SqlConnection sqlConn,
+            DataFrame dataFrame,
+            string tableName,
+            IDbTransaction transaction,
+            CancellationToken ct)
+        {
+            try
+            {
+                var sqlTx = transaction as Microsoft.Data.SqlClient.SqlTransaction;
+                using (var bulkCopy = new Microsoft.Data.SqlClient.SqlBulkCopy(sqlConn, Microsoft.Data.SqlClient.SqlBulkCopyOptions.CheckConstraints | Microsoft.Data.SqlClient.SqlBulkCopyOptions.FireTriggers, sqlTx))
+                {
+                    bulkCopy.DestinationTableName = tableName;
+                    foreach (var colName in dataFrame.ColumnNames)
+                    {
+                        bulkCopy.ColumnMappings.Add(colName, colName);
+                    }
+
+                    var dt = dataFrame.ToDataTable(tableName);
+                    await bulkCopy.WriteToServerAsync(dt, ct).ConfigureAwait(false);
+                    return (true, dataFrame.RowCount);
                 }
             }
             catch

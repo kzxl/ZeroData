@@ -1,3 +1,4 @@
+using ZeroData.Core;
 using ZeroData.Sql.ChangeTracking;
 using ZeroData.Sql.Mapping;
 using ZeroData.Sql.Sql;
@@ -926,6 +927,28 @@ namespace ZeroData.Sql
             if (_orderByClauses != null || _skip.HasValue || _take.HasValue)
                 return ExecuteWhere(null);
             return GetAll();
+        }
+
+        /// <summary>
+        /// Executes the current query and ingests the results directly into a zero-allocation columnar DataFrame without instantiating POCO entities.
+        /// Respects Where, OrderBy, Skip, Take, and query filters.
+        /// </summary>
+        public DataFrame ToDataFrame(int maxRows = -1)
+        {
+            var mapping = MappingCache.GetMapping<T>();
+            var (sql, dp) = BuildWhereSql(mapping, CombinePending(null), _orderByClauses, _skip, _take, _rawWhereFragments);
+            return _context.QueryDataFrame(sql, dp, maxRows);
+        }
+
+        /// <summary>
+        /// Asynchronously executes the current query and ingests the results directly into a zero-allocation columnar DataFrame without instantiating POCO entities.
+        /// Respects Where, OrderBy, Skip, Take, and query filters.
+        /// </summary>
+        public Task<DataFrame> ToDataFrameAsync(int maxRows = -1, CancellationToken ct = default)
+        {
+            var mapping = MappingCache.GetMapping<T>();
+            var (sql, dp) = BuildWhereSql(mapping, CombinePending(null), _orderByClauses, _skip, _take, _rawWhereFragments);
+            return _context.QueryDataFrameAsync(sql, dp, maxRows, ct);
         }
 
         /// <summary>

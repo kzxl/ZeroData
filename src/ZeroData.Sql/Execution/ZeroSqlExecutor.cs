@@ -5,6 +5,7 @@ using System.Data.Common;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
+using ZeroData.Core;
 using ZeroData.Sql.Execution;
 
 namespace ZeroData.Sql
@@ -18,7 +19,7 @@ namespace ZeroData.Sql
     {
         #region Command Setup Helper
 
-        private static IDbCommand PrepareCommand(
+        internal static IDbCommand PrepareCommand(
             IDbConnection connection,
             string sql,
             object parameters,
@@ -830,6 +831,128 @@ namespace ZeroData.Sql
                 command.CommandType,
                 command.CancellationToken,
                 converters);
+        }
+
+        #endregion
+
+        #region DataFrame Methods
+
+        /// <summary>
+        /// Executes a SQL query and ingests the result directly into a zero-allocation columnar DataFrame.
+        /// </summary>
+        public static DataFrame QueryDataFrame(
+            this IDbConnection connection,
+            string sql,
+            object param = null,
+            IDbTransaction transaction = null,
+            int? commandTimeout = null,
+            CommandType? commandType = null,
+            int maxRows = -1)
+        {
+            if (connection == null) throw new ArgumentNullException(nameof(connection));
+            if (string.IsNullOrEmpty(sql)) throw new ArgumentNullException(nameof(sql));
+
+            bool wasClosed = connection.State == ConnectionState.Closed;
+            if (wasClosed) connection.Open();
+
+            try
+            {
+                using (var cmd = PrepareCommand(connection, sql, param, transaction, commandTimeout, commandType, null))
+                using (var reader = cmd.ExecuteReader())
+                {
+                    return DataFrame.FromDataReader(reader, maxRows);
+                }
+            }
+            finally
+            {
+                if (wasClosed) connection.Close();
+            }
+        }
+
+        /// <summary>
+        /// Asynchronously executes a SQL query and ingests the result directly into a zero-allocation columnar DataFrame.
+        /// </summary>
+        public static async Task<DataFrame> QueryDataFrameAsync(
+            this IDbConnection connection,
+            string sql,
+            object param = null,
+            IDbTransaction transaction = null,
+            int? commandTimeout = null,
+            CommandType? commandType = null,
+            int maxRows = -1,
+            CancellationToken cancellationToken = default)
+        {
+            if (connection == null) throw new ArgumentNullException(nameof(connection));
+            if (string.IsNullOrEmpty(sql)) throw new ArgumentNullException(nameof(sql));
+
+            bool wasClosed = connection.State == ConnectionState.Closed;
+            if (wasClosed)
+            {
+                if (connection is DbConnection dbConn)
+                    await dbConn.OpenAsync(cancellationToken).ConfigureAwait(false);
+                else
+                    connection.Open();
+            }
+
+            try
+            {
+                using (var cmd = PrepareCommand(connection, sql, param, transaction, commandTimeout, commandType, null))
+                {
+                    if (cmd is DbCommand dbCmd)
+                    {
+                        using (var reader = await dbCmd.ExecuteReaderAsync(CommandBehavior.Default, cancellationToken).ConfigureAwait(false))
+                        {
+                            return DataFrame.FromDataReader(reader, maxRows);
+                        }
+                    }
+                    else
+                    {
+                        using (var reader = cmd.ExecuteReader())
+                        {
+                            return DataFrame.FromDataReader(reader, maxRows);
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                if (wasClosed) connection.Close();
+            }
+        }
+
+        /// <summary>
+        /// Executes a SQL query via CommandDefinition and returns a columnar DataFrame.
+        /// </summary>
+        public static DataFrame QueryDataFrame(
+            this IDbConnection connection,
+            CommandDefinition command,
+            int maxRows = -1)
+        {
+            return connection.QueryDataFrame(
+                command.CommandText,
+                command.Parameters,
+                command.Transaction,
+                command.CommandTimeout,
+                command.CommandType,
+                maxRows);
+        }
+
+        /// <summary>
+        /// Asynchronously executes a SQL query via CommandDefinition and returns a columnar DataFrame.
+        /// </summary>
+        public static Task<DataFrame> QueryDataFrameAsync(
+            this IDbConnection connection,
+            CommandDefinition command,
+            int maxRows = -1)
+        {
+            return connection.QueryDataFrameAsync(
+                command.CommandText,
+                command.Parameters,
+                command.Transaction,
+                command.CommandTimeout,
+                command.CommandType,
+                maxRows,
+                command.CancellationToken);
         }
 
         #endregion

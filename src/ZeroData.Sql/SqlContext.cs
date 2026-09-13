@@ -1,3 +1,4 @@
+using ZeroData.Core;
 using ZeroData.Sql.ChangeTracking;
 using ZeroData.Sql.Dialects;
 using ZeroData.Sql.Mapping;
@@ -485,6 +486,46 @@ namespace ZeroData.Sql
             await EnsureConnectionOpenAsync(ct).ConfigureAwait(false);
             return await Connection.ExecuteAsync(new CommandDefinition(sql, parameters,
                 transaction: Transaction, commandTimeout: CommandTimeout, cancellationToken: ct)).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Executes a SQL query and returns a zero-allocation columnar DataFrame without instantiating POCO entities.
+        /// </summary>
+        public DataFrame QueryDataFrame(string sql, object parameters = null, int maxRows = -1)
+        {
+            ThrowIfDisposed();
+            EnsureConnectionOpen();
+            return Connection.QueryDataFrame(sql, parameters, Transaction, CommandTimeout, maxRows: maxRows);
+        }
+
+        /// <summary>
+        /// Asynchronously executes a SQL query and returns a zero-allocation columnar DataFrame without instantiating POCO entities.
+        /// </summary>
+        public async Task<DataFrame> QueryDataFrameAsync(string sql, object parameters = null, int maxRows = -1, CancellationToken ct = default)
+        {
+            ThrowIfDisposed();
+            await EnsureConnectionOpenAsync(ct).ConfigureAwait(false);
+            return await Connection.QueryDataFrameAsync(sql, parameters, Transaction, CommandTimeout, maxRows: maxRows, cancellationToken: ct).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Bulk inserts data from a columnar DataFrame directly into the specified table without creating POCO entities.
+        /// </summary>
+        public int BulkInsert(DataFrame dataFrame, string tableName)
+        {
+            ThrowIfDisposed();
+            EnsureConnectionOpen();
+            return BulkOperations.BulkInsert(Connection, dataFrame, tableName, Transaction, Dialect);
+        }
+
+        /// <summary>
+        /// Asynchronously bulk inserts data from a columnar DataFrame directly into the specified table without creating POCO entities.
+        /// </summary>
+        public async Task<int> BulkInsertAsync(DataFrame dataFrame, string tableName, CancellationToken ct = default)
+        {
+            ThrowIfDisposed();
+            await EnsureConnectionOpenAsync(ct).ConfigureAwait(false);
+            return await BulkOperations.BulkInsertAsync(Connection, dataFrame, tableName, Transaction, Dialect, ct).ConfigureAwait(false);
         }
 
         /// <summary>
