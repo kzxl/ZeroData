@@ -1,4 +1,5 @@
 using ZeroData.Core;
+using ZeroData.Sql.Caching;
 using ZeroData.Sql.ChangeTracking;
 using ZeroData.Sql.Mapping;
 using ZeroData.Sql.Sql;
@@ -35,6 +36,7 @@ namespace ZeroData.Sql
         private List<(string Sql, IDictionary<string, object> Parameters)> _rawWhereFragments;
         private int _subqueryAliasSeq;
         private int _subqueryParamSeed;
+        private TimeSpan? _cacheDuration;
 
         internal Table(SqlContext context, ChangeTracker changeTracker)
         {
@@ -191,6 +193,7 @@ namespace ZeroData.Sql
                 transaction: _context.Transaction, commandTimeout: _context.CommandTimeout);
 
             _changeTracker.DetachByKey(mapping, id);
+            _context.QueryCache?.Invalidate(typeof(T));
             return rows;
         }
 
@@ -231,6 +234,7 @@ namespace ZeroData.Sql
                 transaction: _context.Transaction, commandTimeout: _context.CommandTimeout, cancellationToken: ct)).ConfigureAwait(false);
 
             _changeTracker.DetachByKey(mapping, id);
+            _context.QueryCache?.Invalidate(typeof(T));
             return rows;
         }
 
@@ -272,6 +276,7 @@ namespace ZeroData.Sql
                 transaction: _context.Transaction, commandTimeout: _context.CommandTimeout);
 
             DetachMatchingTracked(predicate);
+            _context.QueryCache?.Invalidate(typeof(T));
             return rows;
         }
 
@@ -312,6 +317,7 @@ namespace ZeroData.Sql
                 transaction: _context.Transaction, commandTimeout: _context.CommandTimeout, cancellationToken: ct)).ConfigureAwait(false);
 
             DetachMatchingTracked(predicate);
+            _context.QueryCache?.Invalidate(typeof(T));
             return rows;
         }
 
@@ -331,6 +337,7 @@ namespace ZeroData.Sql
                 transaction: _context.Transaction, commandTimeout: _context.CommandTimeout);
 
             DetachMatchingTracked(predicate);
+            _context.QueryCache?.Invalidate(typeof(T));
             return rows;
         }
 
@@ -349,6 +356,7 @@ namespace ZeroData.Sql
                 transaction: _context.Transaction, commandTimeout: _context.CommandTimeout, cancellationToken: ct)).ConfigureAwait(false);
 
             DetachMatchingTracked(predicate);
+            _context.QueryCache?.Invalidate(typeof(T));
             return rows;
         }
 
@@ -599,6 +607,30 @@ namespace ZeroData.Sql
         public Table<T> AsNoTracking()
         {
             _noTracking = true;
+            return this;
+        }
+
+        #endregion
+
+        #region Caching (L2 Query Cache)
+
+        /// <summary>
+        /// Enables second-level query caching for this query with the specified duration.
+        /// When cached, identical queries within the duration return cached results without querying the database.
+        /// Automatically invalidated when entities of type T are modified via SubmitChanges or Bulk operations.
+        /// </summary>
+        public Table<T> FromCache(TimeSpan duration)
+        {
+            _cacheDuration = duration;
+            return this;
+        }
+
+        /// <summary>
+        /// Enables second-level query caching with a default duration of 60 seconds (or optional custom duration).
+        /// </summary>
+        public Table<T> AsCached(TimeSpan? duration = null)
+        {
+            _cacheDuration = duration ?? TimeSpan.FromSeconds(60);
             return this;
         }
 
@@ -921,7 +953,8 @@ namespace ZeroData.Sql
         /// </summary>
         public List<T> ToList()
         {
-            if ((_pendingPredicates != null && _pendingPredicates.Count > 0)
+            if (_cacheDuration.HasValue
+                || (_pendingPredicates != null && _pendingPredicates.Count > 0)
                 || (_rawWhereFragments != null && _rawWhereFragments.Count > 0))
                 return ExecuteWhere(CombinePending(null));
             if (_orderByClauses != null || _skip.HasValue || _take.HasValue)
@@ -1419,7 +1452,8 @@ namespace ZeroData.Sql
         /// </summary>
         public async Task<List<T>> ToListAsync(CancellationToken ct = default)
         {
-            if ((_pendingPredicates != null && _pendingPredicates.Count > 0)
+            if (_cacheDuration.HasValue
+                || (_pendingPredicates != null && _pendingPredicates.Count > 0)
                 || (_rawWhereFragments != null && _rawWhereFragments.Count > 0))
                 return await ExecuteWhereAsync(CombinePending(null), ct: ct).ConfigureAwait(false);
 
@@ -1813,15 +1847,34 @@ namespace ZeroData.Sql
             var skip = _skip;
             var take = _take;
             var rawFragments = _rawWhereFragments;
+            var cacheDuration = _cacheDuration;
             ResetQueryState();
 
             var (fullSql, dp) = BuildWhereSql(mapping, predicate, orderBy, skip, take, rawFragments);
+
+            if (cacheDuration.HasValue && _context.QueryCache != null)
+            {
+                var cacheKey = BuildCacheKey(fullSql, dp);
+                if (_context.QueryCache.TryGet<List<T>>(cacheKey, out var cachedResults))
+                {
+                    return cachedResults;
+                }
+
+                _context.EnsureConnectionOpen();
+                var results = _context.Connection.Query<T>(fullSql, dp,
+                    transaction: _context.Transaction, commandTimeout: _context.CommandTimeout, converters: _context.Converters).ToList();
+                TrackResults(results, mapping);
+                LoadAssociations(results, mapping);
+                _context.QueryCache.Set(cacheKey, results, cacheDuration.Value, new[] { typeof(T) });
+                return results;
+            }
+
             _context.EnsureConnectionOpen();
-            var results = _context.Connection.Query<T>(fullSql, dp,
+            var resultsDirect = _context.Connection.Query<T>(fullSql, dp,
                 transaction: _context.Transaction, commandTimeout: _context.CommandTimeout, converters: _context.Converters).ToList();
-            TrackResults(results, mapping);
-            LoadAssociations(results, mapping);
-            return results;
+            TrackResults(resultsDirect, mapping);
+            LoadAssociations(resultsDirect, mapping);
+            return resultsDirect;
         }
 
         private async Task<List<T>> ExecuteWhereAsync(Expression<Func<T, bool>> predicate,
@@ -1832,17 +1885,51 @@ namespace ZeroData.Sql
             var skip = _skip;
             var take = _take;
             var rawFragments = _rawWhereFragments;
+            var cacheDuration = _cacheDuration;
             ResetQueryState();
 
             var (fullSql, dp) = BuildWhereSql(mapping, predicate, orderBy, skip, take, rawFragments);
+
+            if (cacheDuration.HasValue && _context.QueryCache != null)
+            {
+                var cacheKey = BuildCacheKey(fullSql, dp);
+                if (_context.QueryCache.TryGet<List<T>>(cacheKey, out var cachedResults))
+                {
+                    return cachedResults;
+                }
+
+                await _context.EnsureConnectionOpenAsync(ct).ConfigureAwait(false);
+                var results = (await _context.Connection.QueryAsync<T>(
+                    new CommandDefinition(fullSql, dp, transaction: _context.Transaction,
+                        commandTimeout: _context.CommandTimeout, cancellationToken: ct),
+                    converters: _context.Converters).ConfigureAwait(false)).ToList();
+                TrackResults(results, mapping);
+                await LoadAssociationsAsync(results, mapping, ct).ConfigureAwait(false);
+                _context.QueryCache.Set(cacheKey, results, cacheDuration.Value, new[] { typeof(T) });
+                return results;
+            }
+
             await _context.EnsureConnectionOpenAsync(ct).ConfigureAwait(false);
-            var results = (await _context.Connection.QueryAsync<T>(
+            var resultsDirect = (await _context.Connection.QueryAsync<T>(
                 new CommandDefinition(fullSql, dp, transaction: _context.Transaction,
                     commandTimeout: _context.CommandTimeout, cancellationToken: ct),
                 converters: _context.Converters).ConfigureAwait(false)).ToList();
-            TrackResults(results, mapping);
-            await LoadAssociationsAsync(results, mapping, ct).ConfigureAwait(false);
-            return results;
+            TrackResults(resultsDirect, mapping);
+            await LoadAssociationsAsync(resultsDirect, mapping, ct).ConfigureAwait(false);
+            return resultsDirect;
+        }
+
+        private static string BuildCacheKey(string sql, DynamicParameters dp)
+        {
+            if (dp == null || dp.Count == 0) return sql;
+            var sb = new System.Text.StringBuilder(sql);
+            sb.Append(" # params:[");
+            foreach (var kv in dp.OrderBy(p => p.Key, StringComparer.Ordinal))
+            {
+                sb.Append(kv.Key).Append('=').Append(kv.Value?.ToString() ?? "NULL").Append(';');
+            }
+            sb.Append(']');
+            return sb.ToString();
         }
 
         private (string sql, DynamicParameters dp) BuildWhereSql(
@@ -2167,6 +2254,7 @@ namespace ZeroData.Sql
             _rawWhereFragments = null;
             _subqueryAliasSeq = 0;
             _subqueryParamSeed = 0;
+            _cacheDuration = null;
         }
 
         #endregion
@@ -2175,9 +2263,9 @@ namespace ZeroData.Sql
 
         private List<T> GetAll()
         {
-            // If global filters are active, go through BuildWhereSql path
-            if (!_ignoreFilters && _context.Filters.HasFilters
-                && _context.Filters.GetFilters(typeof(T)).Count > 0)
+            // If caching or global filters are active, go through BuildWhereSql path
+            if (_cacheDuration.HasValue || (!_ignoreFilters && _context.Filters.HasFilters
+                && _context.Filters.GetFilters(typeof(T)).Count > 0))
             {
                 return ExecuteWhere(null);
             }

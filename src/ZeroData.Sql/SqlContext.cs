@@ -1,7 +1,9 @@
 using ZeroData.Core;
+using ZeroData.Sql.Caching;
 using ZeroData.Sql.ChangeTracking;
 using ZeroData.Sql.Dialects;
 using ZeroData.Sql.Mapping;
+using ZeroData.Sql.Resilience;
 using ZeroData.Sql.Sql;
 using System;
 using System.Collections.Concurrent;
@@ -65,6 +67,16 @@ namespace ZeroData.Sql
         /// Converts model types ⇄ database types (e.g., Enum ↔ string, object ↔ JSON).
         /// </summary>
         public ValueConverterCollection Converters { get; } = new ValueConverterCollection();
+
+        /// <summary>
+        /// Second-level query cache. When set, queries using FromCache() or AsCached() will be cached and auto-invalidated on writes.
+        /// </summary>
+        public IL2QueryCache QueryCache { get; set; }
+
+        /// <summary>
+        /// Retry policy for transient database errors.
+        /// </summary>
+        public RetryPolicy RetryPolicy { get; set; }
 
         #region Constructors
 
@@ -198,6 +210,15 @@ namespace ZeroData.Sql
                 ProcessChanges(changes, tx);
                 if (ownTx) tx.Commit();
                 _changeTracker.AcceptChanges();
+
+                if (QueryCache != null)
+                {
+                    var changedTypes = changes.Select(c => c.EntityType).Distinct();
+                    foreach (var type in changedTypes)
+                    {
+                        QueryCache.Invalidate(type);
+                    }
+                }
             }
             catch { if (ownTx) tx.Rollback(); throw; }
             finally { if (ownTx) tx.Dispose(); }
@@ -266,6 +287,15 @@ namespace ZeroData.Sql
                 await ProcessChangesAsync(changes, tx, ct).ConfigureAwait(false);
                 if (ownTx) tx.Commit();
                 _changeTracker.AcceptChanges();
+
+                if (QueryCache != null)
+                {
+                    var changedTypes = changes.Select(c => c.EntityType).Distinct();
+                    foreach (var type in changedTypes)
+                    {
+                        QueryCache.Invalidate(type);
+                    }
+                }
             }
             catch { if (ownTx) tx.Rollback(); throw; }
             finally { if (ownTx) tx.Dispose(); }
@@ -594,19 +624,31 @@ namespace ZeroData.Sql
         /// Bulk inserts entities using high-speed batched multi-row INSERT statements.
         /// </summary>
         public int BulkInsert<T>(IEnumerable<T> entities) where T : class
-            => BulkOperations.BulkInsert(Connection, entities, Transaction, Dialect);
+        {
+            var res = BulkOperations.BulkInsert(Connection, entities, Transaction, Dialect);
+            QueryCache?.Invalidate(typeof(T));
+            return res;
+        }
 
         /// <summary>
         /// Bulk updates entities using batched UPDATE statements.
         /// </summary>
         public int BulkUpdate<T>(IEnumerable<T> entities) where T : class
-            => BulkOperations.BulkUpdate(Connection, entities, Transaction, Dialect);
+        {
+            var res = BulkOperations.BulkUpdate(Connection, entities, Transaction, Dialect);
+            QueryCache?.Invalidate(typeof(T));
+            return res;
+        }
 
         /// <summary>
         /// Bulk deletes entities using batched DELETE statements.
         /// </summary>
         public int BulkDelete<T>(IEnumerable<T> entities) where T : class
-            => BulkOperations.BulkDelete(Connection, entities, Transaction, Dialect);
+        {
+            var res = BulkOperations.BulkDelete(Connection, entities, Transaction, Dialect);
+            QueryCache?.Invalidate(typeof(T));
+            return res;
+        }
 
         /// <summary>
         /// Asynchronously bulk inserts entities using SqlBulkCopy (SQL Server) or batched multi-row INSERT with compiled getters.
@@ -615,7 +657,9 @@ namespace ZeroData.Sql
         {
             ThrowIfDisposed();
             await EnsureConnectionOpenAsync(ct).ConfigureAwait(false);
-            return await BulkOperations.BulkInsertAsync(Connection, entities, Transaction, Dialect, ct).ConfigureAwait(false);
+            var res = await BulkOperations.BulkInsertAsync(Connection, entities, Transaction, Dialect, ct).ConfigureAwait(false);
+            QueryCache?.Invalidate(typeof(T));
+            return res;
         }
 
         /// <summary>
@@ -625,7 +669,9 @@ namespace ZeroData.Sql
         {
             ThrowIfDisposed();
             await EnsureConnectionOpenAsync(ct).ConfigureAwait(false);
-            return await BulkOperations.BulkUpdateAsync(Connection, entities, Transaction, Dialect, ct).ConfigureAwait(false);
+            var res = await BulkOperations.BulkUpdateAsync(Connection, entities, Transaction, Dialect, ct).ConfigureAwait(false);
+            QueryCache?.Invalidate(typeof(T));
+            return res;
         }
 
         /// <summary>
@@ -635,8 +681,48 @@ namespace ZeroData.Sql
         {
             ThrowIfDisposed();
             await EnsureConnectionOpenAsync(ct).ConfigureAwait(false);
-            return await BulkOperations.BulkDeleteAsync(Connection, entities, Transaction, Dialect, ct).ConfigureAwait(false);
+            var res = await BulkOperations.BulkDeleteAsync(Connection, entities, Transaction, Dialect, ct).ConfigureAwait(false);
+            QueryCache?.Invalidate(typeof(T));
+            return res;
         }
+
+        #endregion
+
+        #region Cache & Resilience Helpers
+
+        /// <summary>
+        /// Manually invalidates cached queries for entity type T.
+        /// </summary>
+        public void InvalidateCache<T>() where T : class => QueryCache?.Invalidate(typeof(T));
+
+        /// <summary>
+        /// Manually invalidates cached queries for the specified entity type.
+        /// </summary>
+        public void InvalidateCache(Type entityType) => QueryCache?.Invalidate(entityType);
+
+        /// <summary>
+        /// Manually invalidates all entries in the query cache.
+        /// </summary>
+        public void InvalidateAllCache() => QueryCache?.InvalidateAll();
+
+        /// <summary>
+        /// Executes an operation with transient fault retries using the context's RetryPolicy.
+        /// </summary>
+        public T ExecuteWithRetry<T>(Func<T> operation)
+        {
+            var policy = RetryPolicy ?? RetryPolicy.Default;
+            return policy.Execute(operation);
+        }
+
+        /// <summary>
+        /// Asynchronously executes an operation with transient fault retries using the context's RetryPolicy.
+        /// </summary>
+        public Task<T> ExecuteWithRetryAsync<T>(Func<CancellationToken, Task<T>> operation, CancellationToken ct = default)
+        {
+            var policy = RetryPolicy ?? RetryPolicy.Default;
+            return policy.ExecuteAsync(operation, ct);
+        }
+
         #endregion
 
         #region Transaction Helpers (Phase 9)
