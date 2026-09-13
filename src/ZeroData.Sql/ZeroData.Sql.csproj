@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <PackageId>ZeroData.Sql</PackageId>
+    <RootNamespace>ZeroData.Sql</RootNamespace>
+    <Description>High-performance hybrid RDBMS data access and ORM framework for the Zero ecosystem, powered by Dapper. Supports .NET Framework and .NET Core, with full async support, fast key lookups, batch operations, change tracking, and LINQ to SQL compatibility.</Description>
+    <PackageTags>zerodata;sql;orm;dapper;database;netstandard</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>ZeroData.Sql.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Dapper" Version="2.1.66" />
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.2" />
+  </ItemGroup>
+
+</Project>

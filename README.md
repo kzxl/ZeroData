@@ -6,18 +6,31 @@
 [![Zero External Dependencies](https://img.shields.io/badge/Dependencies-0%20(Pure%20C%23)-brightgreen.svg)]()
 [![NuGet Version](https://img.shields.io/badge/NuGet-1.0.0-blue.svg)](https://www.nuget.org/packages/ZeroData.Core)
 
-**ZeroData** is a blazing-fast, zero-allocation columnar `DataFrame` and streaming data analytics engine for .NET with **zero external dependencies**. Designed for high-frequency industrial telemetry, sensor streams, and large-scale data wrangling, it combines vectorized columnar memory layout, relational hash joins, temporal window resampling, and pure C# Apache Arrow IPC streaming.
+**ZeroData** is a comprehensive, blazing-fast data platform for .NET, combining in-memory streaming analytics and high-performance RDBMS data access for the **Zero Universe** ecosystem.
+
+### Subsystems:
+1. **`ZeroData.Core`**: In-memory zero-allocation columnar `DataFrame` and streaming analytics engine (Apache Arrow IPC / Polars equivalent) with zero external dependencies.
+2. **`ZeroData.Sql`**: High-performance hybrid RDBMS data access and lightweight ORM, powered by **Dapper**. Provides modern ergonomic syntax, fast primary-key lookups, batch deletes/updates, unit of work, and full LINQ to SQL parity.
+3. **`ZeroData.Sql.CodeGen`**: CLI tool (`zerodata-sql-codegen`) to reverse-engineer SQL schemas and DBML models into strongly-typed C# entities and `SqlContext`.
 
 ---
 
 ## 🌟 Key Capabilities
 
+### ZeroData.Core (Streaming & Columnar Analytics)
 - **Columnar Memory Architecture**: Cache-conscious vertical storage using typed contiguous buffers (`DataColumn<T>`), eliminating row-object boxing and GC overhead.
 - **Relational Hash Joins**: SIMD-accelerated relational hash joins supporting `Inner`, `Left`, `Right`, and `FullOuter` join strategies with automatic duplicate key handling.
 - **Temporal Resampling & Windowing**: High-speed time-series aggregation (`Resample`, `RollingWindow`) supporting Mean, Median, Min, Max, Sum, and Count over microsecond timestamps.
 - **Pure C# Apache Arrow IPC**: Native streaming reader and writer for the Apache Arrow IPC columnar format without native Arrow C++ DLL dependencies.
 - **Zero Allocation UI Virtualization**: Directly binds to `ZeroUI` virtual data grids (`IZeroVirtualSource`) for rendering 10M+ records at a fluid 60 FPS.
-- **Zero External Dependencies**: Standard .NET runtime only.
+
+### ZeroData.Sql (High-Performance RDBMS ORM)
+- **Ergonomic & Modern Syntax**: Direct CRUD (`db.Insert(e)`, `db.Update(e)`, `db.Delete(e)`, `db.Save()`), batch operations, and server-side set deletes (`db.DeleteById<T>(id)`, `table.DeleteWhere(predicate)`).
+- **Fast Primary Key Lookup**: Direct compiled metadata cache lookup (`db.Get<T>(id)` / `db.GetAsync<T>(id)`), bypassing Expression Tree compilation.
+- **Read-Only Zero-Allocation Queries**: `db.Query<T>()` skips snapshot tracking allocations by default for maximum memory efficiency.
+- **Dapper Native Power**: Full native SQL queries and commands using anonymous object parameters (`db.QuerySql<T>(sql, new { ... })`, `db.ExecuteSql(...)`).
+- **Cross-Framework Compatibility**: Standard `netstandard2.0` target runs seamlessly on both legacy .NET Framework 4.6.2 - 4.8 and modern .NET 8 / 9 / 10.
+
 
 ---
 
