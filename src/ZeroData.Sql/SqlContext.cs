@@ -1,4 +1,3 @@
-using Dapper;
 using ZeroData.Sql.ChangeTracking;
 using ZeroData.Sql.Dialects;
 using ZeroData.Sql.Mapping;
@@ -16,7 +15,9 @@ using System.Threading.Tasks;
 namespace ZeroData.Sql
 {
     /// <summary>
-    /// Lightweight DataContext replacement for .NET Core, backed by Dapper.
+    /// Lightweight DataContext replacement for .NET Core, backed by native ADO.NET engine.
+    /// Manages database connections, transactions, and entity change tracking.
+    /// Thread-safe for read operations. Not thread-safe for concurrent writes on the same context instance.
     /// Compatible with System.Data.Linq.DataContext API surface.
     /// Provides both sync and async APIs.
     /// </summary>
@@ -205,7 +206,7 @@ namespace ZeroData.Sql
             ThrowIfDisposed();
             EnsureConnectionOpen();
             var (sql, dp) = ConvertParams(query, parameters);
-            return Connection.Query<T>(sql, (object)dp, transaction: Transaction, commandTimeout: CommandTimeout);
+            return Connection.Query<T>(sql, (object)dp, transaction: Transaction, commandTimeout: CommandTimeout, converters: Converters);
         }
 
         public int ExecuteCommand(string command, params object[] parameters)
@@ -213,7 +214,7 @@ namespace ZeroData.Sql
             ThrowIfDisposed();
             EnsureConnectionOpen();
             var (sql, dp) = ConvertParams(command, parameters);
-            return Connection.Execute(sql, (object)dp, transaction: Transaction, commandTimeout: CommandTimeout);
+            return Connection.Execute(sql, (object)dp, transaction: Transaction, commandTimeout: CommandTimeout, converters: Converters);
         }
 
         /// <summary>
@@ -227,7 +228,7 @@ namespace ZeroData.Sql
             ThrowIfDisposed();
             EnsureConnectionOpen();
             return Connection.Query<T>(sql, parameters,
-                transaction: Transaction, commandTimeout: CommandTimeout).ToList();
+                transaction: Transaction, commandTimeout: CommandTimeout, converters: Converters).ToList();
         }
 
         /// <summary>
@@ -241,7 +242,7 @@ namespace ZeroData.Sql
             return (await Connection.QueryAsync<T>(
                 new CommandDefinition(sql, parameters,
                     transaction: Transaction, commandTimeout: CommandTimeout,
-                    cancellationToken: ct)).ConfigureAwait(false)).ToList();
+                    cancellationToken: ct), converters: Converters).ConfigureAwait(false)).ToList();
         }
 
         #endregion
@@ -274,7 +275,7 @@ namespace ZeroData.Sql
             await EnsureConnectionOpenAsync().ConfigureAwait(false);
             var (sql, dp) = ConvertParams(query, parameters);
             return await Connection.QueryAsync<T>(sql, (object)dp,
-                transaction: Transaction, commandTimeout: CommandTimeout).ConfigureAwait(false);
+                transaction: Transaction, commandTimeout: CommandTimeout, converters: Converters).ConfigureAwait(false);
         }
 
         public async Task<int> ExecuteCommandAsync(string command, params object[] parameters)
@@ -428,7 +429,7 @@ namespace ZeroData.Sql
         }
 
         /// <summary>
-        /// Executes a SQL query with named parameters and maps rows to T using Dapper.
+        /// Executes a SQL query with named parameters and maps rows to T using native ADO.NET engine.
         /// </summary>
         public List<T> QuerySql<T>(string sql, object parameters = null) => FromSql<T>(sql, parameters);
 

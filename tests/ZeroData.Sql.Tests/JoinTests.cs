@@ -1,8 +1,8 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
-using Dapper;
+using ZeroData.Sql;
 using ZeroData.Sql.Mapping;
 using Microsoft.Data.Sqlite;
 using Xunit;

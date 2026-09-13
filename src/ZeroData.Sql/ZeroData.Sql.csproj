@@ -6,8 +6,8 @@
     <Nullable>enable</Nullable>
     <PackageId>ZeroData.Sql</PackageId>
     <RootNamespace>ZeroData.Sql</RootNamespace>
-    <Description>High-performance hybrid RDBMS data access and ORM framework for the Zero ecosystem, powered by Dapper. Supports .NET Framework and .NET Core, with full async support, fast key lookups, batch operations, change tracking, and LINQ to SQL compatibility.</Description>
-    <PackageTags>zerodata;sql;orm;dapper;database;netstandard</PackageTags>
+    <Description>Sovereign high-performance native ADO.NET query execution, Expression Tree materialization, and ORM framework for the Zero ecosystem. Supports .NET Framework and .NET Core, with full async support, fast key lookups, batch operations, change tracking, and LINQ to SQL compatibility.</Description>
+    <PackageTags>zerodata;sql;orm;database;adonet;zero-allocation;netstandard</PackageTags>
   </PropertyGroup>
 
   <ItemGroup>
@@ -17,7 +17,10 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Dapper" Version="2.1.66" />
+    <ProjectReference Include="..\..\..\ZeroPrimitives\src\ZeroPrimitives.Core\ZeroPrimitives.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.2" />
   </ItemGroup>
 

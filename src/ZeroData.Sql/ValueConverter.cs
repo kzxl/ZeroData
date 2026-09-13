@@ -1,8 +1,6 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Data;
-using Dapper;
 
 namespace ZeroData.Sql
 {
@@ -36,11 +34,16 @@ namespace ZeroData.Sql
     /// <summary>
     /// Registry of value converters for model⇄database type conversion.
     /// Converters are applied automatically during INSERT/UPDATE (ToDb)
-    /// and can be used for custom deserialization (FromDb).
+    /// and during SELECT/read queries (FromDb).
     /// Thread-safe.
     /// </summary>
     public class ValueConverterCollection
     {
+        /// <summary>
+        /// Global shared converter collection for application-wide custom types.
+        /// </summary>
+        public static ValueConverterCollection Global { get; } = new ValueConverterCollection();
+
         private readonly ConcurrentDictionary<Type, ValueConverter> _converters
             = new ConcurrentDictionary<Type, ValueConverter>();
 
@@ -57,9 +60,6 @@ namespace ZeroData.Sql
                 v => toDb((TModel)v),
                 v => fromDb((TDb)v));
             _converters[typeof(TModel)] = converter;
-
-            // Register a Dapper type handler so reads (SELECT) convert automatically.
-            SqlMapper.AddTypeHandler(typeof(TModel), new ConverterTypeHandler<TModel, TDb>(toDb, fromDb));
         }
 
         /// <summary>
@@ -125,42 +125,6 @@ namespace ZeroData.Sql
         public void Clear()
         {
             _converters.Clear();
-        }
-    }
-
-    /// <summary>
-    /// Dapper type handler that bridges a registered LiteSql value converter,
-    /// enabling automatic model⇄database conversion during reads and parameterization.
-    /// </summary>
-    internal sealed class ConverterTypeHandler<TModel, TDb> : SqlMapper.TypeHandler<TModel>
-    {
-        private readonly Func<TModel, TDb> _toDb;
-        private readonly Func<TDb, TModel> _fromDb;
-
-        public ConverterTypeHandler(Func<TModel, TDb> toDb, Func<TDb, TModel> fromDb)
-        {
-            _toDb = toDb;
-            _fromDb = fromDb;
-        }
-
-        public override void SetValue(IDbDataParameter parameter, TModel value)
-        {
-            parameter.Value = (object)_toDb(value) ?? DBNull.Value;
-        }
-
-        public override TModel Parse(object value)
-        {
-            if (value == null || value is DBNull)
-                return default;
-
-            // Coerce the raw DB value to TDb before invoking the user's converter.
-            TDb dbValue;
-            if (value is TDb tdb)
-                dbValue = tdb;
-            else
-                dbValue = (TDb)Convert.ChangeType(value, Nullable.GetUnderlyingType(typeof(TDb)) ?? typeof(TDb));
-
-            return _fromDb(dbValue);
         }
     }
 }

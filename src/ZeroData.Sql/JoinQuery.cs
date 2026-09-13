@@ -1,10 +1,9 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Threading.Tasks;
-using Dapper;
 using ZeroData.Sql.Dialects;
 using ZeroData.Sql.Mapping;
 using ZeroData.Sql.Sql;

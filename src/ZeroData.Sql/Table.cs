@@ -1,4 +1,3 @@
-using Dapper;
 using ZeroData.Sql.ChangeTracking;
 using ZeroData.Sql.Mapping;
 using ZeroData.Sql.Sql;
@@ -844,7 +843,7 @@ namespace ZeroData.Sql
             var sql = SqlGenerator.GenerateSelectAll(mapping, _context.Dialect).Replace("SELECT ", "SELECT DISTINCT ");
             _context.EnsureConnectionOpen();
             return _context.Connection.Query<T>(sql,
-                transaction: _context.Transaction, commandTimeout: _context.CommandTimeout).ToList();
+                transaction: _context.Transaction, commandTimeout: _context.CommandTimeout, converters: _context.Converters).ToList();
         }
 
         /// <summary>
@@ -1208,7 +1207,8 @@ namespace ZeroData.Sql
             await _context.EnsureConnectionOpenAsync(ct).ConfigureAwait(false);
             return (await _context.Connection.QueryAsync<T>(
                 new CommandDefinition(sql, transaction: _context.Transaction,
-                    commandTimeout: _context.CommandTimeout, cancellationToken: ct)).ConfigureAwait(false)).ToList();
+                    commandTimeout: _context.CommandTimeout, cancellationToken: ct),
+                converters: _context.Converters).ConfigureAwait(false)).ToList();
         }
 
         /// <summary>
@@ -1235,7 +1235,8 @@ namespace ZeroData.Sql
             var sql = SqlGenerator.GenerateSelectAll(mapping, _context.Dialect);
             var results = (await _context.Connection.QueryAsync<T>(
                 new CommandDefinition(sql, transaction: _context.Transaction,
-                    commandTimeout: _context.CommandTimeout, cancellationToken: ct)).ConfigureAwait(false)).ToList();
+                    commandTimeout: _context.CommandTimeout, cancellationToken: ct),
+                converters: _context.Converters).ConfigureAwait(false)).ToList();
             TrackResults(results, mapping);
             await LoadAssociationsAsync(results, mapping, ct).ConfigureAwait(false);
             return results;
@@ -1279,7 +1280,7 @@ namespace ZeroData.Sql
             var (sql, dp) = BuildFindSql(mapping, pks, keyValues);
             _context.EnsureConnectionOpen();
             var entity = _context.Connection.QueryFirstOrDefault<T>(sql, dp,
-                transaction: _context.Transaction, commandTimeout: _context.CommandTimeout);
+                transaction: _context.Transaction, commandTimeout: _context.CommandTimeout, converters: _context.Converters);
             if (entity != null)
             {
                 TrackSingle(entity, mapping);
@@ -1298,7 +1299,8 @@ namespace ZeroData.Sql
             await _context.EnsureConnectionOpenAsync(ct).ConfigureAwait(false);
             var entity = await _context.Connection.QueryFirstOrDefaultAsync<T>(
                 new CommandDefinition(sql, dp, transaction: _context.Transaction,
-                    commandTimeout: _context.CommandTimeout, cancellationToken: ct)).ConfigureAwait(false);
+                    commandTimeout: _context.CommandTimeout, cancellationToken: ct),
+                converters: _context.Converters).ConfigureAwait(false);
             if (entity != null)
             {
                 TrackSingle(entity, mapping);
@@ -1346,7 +1348,7 @@ namespace ZeroData.Sql
             var (fullSql, dp) = BuildWhereSql(mapping, predicate, orderBy, skip, take, rawFragments);
             _context.EnsureConnectionOpen();
             var results = _context.Connection.Query<T>(fullSql, dp,
-                transaction: _context.Transaction, commandTimeout: _context.CommandTimeout).ToList();
+                transaction: _context.Transaction, commandTimeout: _context.CommandTimeout, converters: _context.Converters).ToList();
             TrackResults(results, mapping);
             LoadAssociations(results, mapping);
             return results;
@@ -1366,7 +1368,8 @@ namespace ZeroData.Sql
             await _context.EnsureConnectionOpenAsync(ct).ConfigureAwait(false);
             var results = (await _context.Connection.QueryAsync<T>(
                 new CommandDefinition(fullSql, dp, transaction: _context.Transaction,
-                    commandTimeout: _context.CommandTimeout, cancellationToken: ct)).ConfigureAwait(false)).ToList();
+                    commandTimeout: _context.CommandTimeout, cancellationToken: ct),
+                converters: _context.Converters).ConfigureAwait(false)).ToList();
             TrackResults(results, mapping);
             await LoadAssociationsAsync(results, mapping, ct).ConfigureAwait(false);
             return results;
@@ -1525,7 +1528,7 @@ namespace ZeroData.Sql
             var (fullSql, dp) = BuildSelectSql(mapping, selector, predicate, orderBy, skip, take);
             _context.EnsureConnectionOpen();
             return _context.Connection.Query<TResult>(fullSql, dp,
-                transaction: _context.Transaction, commandTimeout: _context.CommandTimeout).ToList();
+                transaction: _context.Transaction, commandTimeout: _context.CommandTimeout, converters: _context.Converters).ToList();
         }
 
         private async Task<List<TResult>> ExecuteSelectAsync<TResult>(Expression<Func<T, TResult>> selector,
@@ -1541,7 +1544,8 @@ namespace ZeroData.Sql
             await _context.EnsureConnectionOpenAsync(ct).ConfigureAwait(false);
             var results = (await _context.Connection.QueryAsync<TResult>(
                 new CommandDefinition(fullSql, dp, transaction: _context.Transaction,
-                    commandTimeout: _context.CommandTimeout, cancellationToken: ct)).ConfigureAwait(false)).ToList();
+                    commandTimeout: _context.CommandTimeout, cancellationToken: ct),
+                converters: _context.Converters).ConfigureAwait(false)).ToList();
             return results;
         }
 
@@ -1835,11 +1839,12 @@ namespace ZeroData.Sql
             var sql = $"SELECT * FROM {quotedTable} WHERE {_context.Dialect.QuoteIdentifier(assoc.OtherKey)} IN ({string.Join(", ", paramNames)})";
 
             _context.EnsureConnectionOpen();
-            // Query as dynamic, then use Dapper to map
+            // Query as dynamic, then use native engine to map
             var relatedEntities = _context.Connection.Query(
                 assoc.OtherType, sql, dp,
                 transaction: _context.Transaction,
-                commandTimeout: _context.CommandTimeout).ToList();
+                commandTimeout: _context.CommandTimeout,
+                converters: _context.Converters).ToList();
 
             // Build lookup: OtherKey value → related entity
             var otherKeyProp = assoc.OtherType.GetProperty(assoc.OtherKey);
@@ -1951,7 +1956,9 @@ namespace ZeroData.Sql
             var relatedEntities = (await _context.Connection.QueryAsync(
                 assoc.OtherType, sql, dp,
                 transaction: _context.Transaction,
-                commandTimeout: _context.CommandTimeout).ConfigureAwait(false)).ToList();
+                commandTimeout: _context.CommandTimeout,
+                cancellationToken: ct,
+                converters: _context.Converters).ConfigureAwait(false)).ToList();
 
             var otherKeyProp = assoc.OtherType.GetProperty(assoc.OtherKey);
             if (otherKeyProp == null) return;
@@ -2009,7 +2016,8 @@ namespace ZeroData.Sql
             var children = _context.Connection.Query(
                 assoc.OtherType, sql, dp,
                 transaction: _context.Transaction,
-                commandTimeout: _context.CommandTimeout).ToList();
+                commandTimeout: _context.CommandTimeout,
+                converters: _context.Converters).ToList();
 
             // Group children by FK value
             var fkPropOnChild = assoc.OtherType.GetProperty(assoc.OtherKey);
@@ -2082,7 +2090,9 @@ namespace ZeroData.Sql
             var children = (await _context.Connection.QueryAsync(
                 assoc.OtherType, sql, dp,
                 transaction: _context.Transaction,
-                commandTimeout: _context.CommandTimeout).ConfigureAwait(false)).ToList();
+                commandTimeout: _context.CommandTimeout,
+                cancellationToken: ct,
+                converters: _context.Converters).ConfigureAwait(false)).ToList();
 
             var fkPropOnChild = assoc.OtherType.GetProperty(assoc.OtherKey);
             if (fkPropOnChild == null) return;

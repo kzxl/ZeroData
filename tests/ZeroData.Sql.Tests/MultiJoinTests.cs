@@ -1,7 +1,7 @@
-﻿using System;
+using System;
 using System.Linq;
 using System.Threading.Tasks;
-using Dapper;
+using ZeroData.Sql;
 using ZeroData.Sql.Mapping;
 using Microsoft.Data.Sqlite;
 using Xunit;

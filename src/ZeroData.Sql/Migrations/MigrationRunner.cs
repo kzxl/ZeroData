@@ -1,8 +1,7 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
-using Dapper;
 using ZeroData.Sql.Dialects;
 
 namespace ZeroData.Sql.Migrations

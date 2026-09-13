@@ -1,6 +1,6 @@
-﻿using System;
+using System;
 using System.Linq;
-using Dapper;
+using ZeroData.Sql;
 using ZeroData.Sql.Dialects;
 using ZeroData.Sql.Migrations;
 using Microsoft.Data.Sqlite;

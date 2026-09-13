@@ -1,4 +1,3 @@
-﻿using Dapper;
 using ZeroData.Sql.Mapping;
 using ZeroData.Sql.Sql;
 using System;

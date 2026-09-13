@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Data;
 using System.Linq;
 using System.Text;
-using Dapper;
 using ZeroData.Sql.Dialects;
 using ZeroData.Sql.Mapping;
 using ZeroData.Sql.Sql;

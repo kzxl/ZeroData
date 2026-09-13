@@ -1,6 +1,6 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
-using Dapper;
+using ZeroData.Sql;
 using ZeroData.Sql.Mapping;
 using Microsoft.Data.SqlClient;
 using Xunit;
