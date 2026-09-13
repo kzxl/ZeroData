@@ -136,10 +136,16 @@ namespace ZeroData.Sql.Providers
             var cs = connectionString.ToLowerInvariant();
 
             // SQLite
-            if ((cs.Contains("data source=") || cs.Contains("datasource=")) &&
+            if ((cs.Contains("data source=") || cs.Contains("datasource=") || cs.Contains("filename=")) &&
                 (cs.Contains(".db") || cs.Contains(".sqlite") || cs.Contains(".sqlite3") || cs.Contains(":memory:") || cs.Contains("mode=")))
             {
                 return "Sqlite";
+            }
+
+            // Oracle (check before PostgreSQL because Oracle TNS strings contain HOST=)
+            if (cs.Contains("(description=") || cs.Contains("tns_admin") || cs.Contains("dba privilege") || cs.Contains("orcl") || cs.Contains("user id=hr") || cs.Contains(".world"))
+            {
+                return "Oracle";
             }
 
             // PostgreSQL
@@ -152,12 +158,6 @@ namespace ZeroData.Sql.Providers
             if (cs.Contains("port=3306") || cs.Contains("uid=") || cs.Contains("allowuservariables") || cs.Contains("allow zero datetime"))
             {
                 return "MySql";
-            }
-
-            // Oracle
-            if (cs.Contains("(description=") || cs.Contains("tns_admin") || cs.Contains("dba privilege") || cs.Contains("orcl") || cs.Contains("user id=hr") || cs.Contains(".world"))
-            {
-                return "Oracle";
             }
 
             // Firebird

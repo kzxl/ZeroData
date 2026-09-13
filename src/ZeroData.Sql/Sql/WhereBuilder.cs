@@ -140,6 +140,11 @@ namespace ZeroData.Sql.Sql
                     case ExpressionType.LessThanOrEqual: op = "<="; break;
                     case ExpressionType.GreaterThan: op = ">"; break;
                     case ExpressionType.GreaterThanOrEqual: op = ">="; break;
+                    case ExpressionType.Add: op = "+"; break;
+                    case ExpressionType.Subtract: op = "-"; break;
+                    case ExpressionType.Multiply: op = "*"; break;
+                    case ExpressionType.Divide: op = "/"; break;
+                    case ExpressionType.Modulo: op = "%"; break;
                     default:
                         throw new NotSupportedException(
                             $"Binary operator '{binary.NodeType}' is not supported.");
@@ -181,6 +186,27 @@ namespace ZeroData.Sql.Sql
                 return _dialect.QuoteIdentifier(member.Member.Name);
             }
 
+            // Nullable<T>.HasValue translated to IS NOT NULL
+            if (member.Member.Name == "HasValue" &&
+                member.Member.DeclaringType != null &&
+                member.Member.DeclaringType.IsGenericType &&
+                member.Member.DeclaringType.GetGenericTypeDefinition() == typeof(Nullable<>) &&
+                ContainsEntityParameter(member.Expression))
+            {
+                var inner = Visit(member.Expression);
+                return $"{inner} IS NOT NULL";
+            }
+
+            // Nullable<T>.Value unwraps to underlying column
+            if (member.Member.Name == "Value" &&
+                member.Member.DeclaringType != null &&
+                member.Member.DeclaringType.IsGenericType &&
+                member.Member.DeclaringType.GetGenericTypeDefinition() == typeof(Nullable<>) &&
+                ContainsEntityParameter(member.Expression))
+            {
+                return Visit(member.Expression);
+            }
+
             // String .Length property translated to LEN / LENGTH
             if (member.Member.Name == "Length" && member.Type == typeof(int) && ContainsEntityParameter(member.Expression))
             {
@@ -219,7 +245,7 @@ namespace ZeroData.Sql.Sql
                 }
             }
 
-            // String instance methods: Contains, StartsWith, EndsWith, ToLower, ToUpper, Trim
+            // String instance methods: Contains, StartsWith, EndsWith, ToLower, ToUpper, Trim, Replace
             if (method.Object != null && method.Object.Type == typeof(string))
             {
                 switch (method.Method.Name)
@@ -243,6 +269,16 @@ namespace ZeroData.Sql.Sql
                     case "TrimEnd":
                         if (method.Arguments.Count == 0)
                             return $"RTRIM({Visit(method.Object)})";
+                        break;
+
+                    case "Replace":
+                        if (method.Arguments.Count == 2)
+                        {
+                            var column = Visit(method.Object);
+                            var oldVal = Visit(method.Arguments[0]);
+                            var newVal = Visit(method.Arguments[1]);
+                            return $"REPLACE({column}, {oldVal}, {newVal})";
+                        }
                         break;
 
                     case "Contains":
@@ -342,6 +378,15 @@ namespace ZeroData.Sql.Sql
                 var type = m.Type;
                 return type == typeof(bool) || type == typeof(bool?);
             }
+
+            if (expr is MemberExpression member &&
+                member.Member.Name == "Value" &&
+                member.Type == typeof(bool) &&
+                ContainsEntityParameter(member.Expression))
+            {
+                return true;
+            }
+
             return false;
         }
 
@@ -365,7 +410,9 @@ namespace ZeroData.Sql.Sql
 
         private bool IsSqlServer()
         {
-            return _dialect is SqlServerDialect || string.Equals(_dialect?.ProviderName, "SqlServer", StringComparison.OrdinalIgnoreCase);
+            return _dialect is SqlServerDialect ||
+                   string.Equals(_dialect?.ProviderName, "SQL Server", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(_dialect?.ProviderName, "SqlServer", StringComparison.OrdinalIgnoreCase);
         }
 
         private bool IsPostgreSql()
