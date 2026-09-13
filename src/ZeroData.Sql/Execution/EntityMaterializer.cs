@@ -26,10 +26,8 @@ namespace ZeroData.Sql.Execution
         /// </summary>
         public static T Materialize<T>(IDataReader reader, ValueConverterCollection converters = null)
         {
-            var obj = Materialize(reader, typeof(T), converters);
-            if (obj == null)
-                return default;
-            return (T)obj;
+            var materializer = GetMaterializer<T>(reader);
+            return materializer(reader, converters);
         }
 
         /// <summary>
@@ -37,41 +35,28 @@ namespace ZeroData.Sql.Execution
         /// </summary>
         public static object Materialize(IDataReader reader, Type targetType, ValueConverterCollection converters = null)
         {
-            if (targetType == null)
-                throw new ArgumentNullException(nameof(targetType));
+            var materializer = GetMaterializer(targetType, reader);
+            return materializer(reader, converters);
+        }
 
-            // 1. Primitive / Scalar handling
+        /// <summary>
+        /// Pre-resolves and caches the row materialization delegate for type T based on the reader's schema.
+        /// Call this once before reader.Read() loops to avoid computing schema keys and looking up dictionaries per row.
+        /// </summary>
+        public static Func<IDataReader, ValueConverterCollection, T> GetMaterializer<T>(IDataReader reader)
+        {
+            var targetType = typeof(T);
+
             if (IsScalarType(targetType))
             {
-                if (reader.IsDBNull(0))
-                {
-                    return targetType.IsValueType && Nullable.GetUnderlyingType(targetType) == null
-                        ? Activator.CreateInstance(targetType)
-                        : null;
-                }
-
-                var rawValue = reader.GetValue(0);
-                if (converters != null && converters.HasConverter(targetType))
-                {
-                    return converters.ConvertFromDb(rawValue, targetType);
-                }
-                return FastConvert.ChangeType(rawValue, targetType);
+                return (r, conv) => (T)MaterializeScalar(r, targetType, conv);
             }
 
-            // 2. Dynamic / ZeroRow handling
             if (targetType == typeof(object) || targetType == typeof(ZeroRow) || targetType == typeof(IDictionary<string, object>))
             {
-                var row = new ZeroRow(reader.FieldCount);
-                for (int i = 0; i < reader.FieldCount; i++)
-                {
-                    var name = reader.GetName(i);
-                    var val = reader.IsDBNull(i) ? null : reader.GetValue(i);
-                    row[name] = val;
-                }
-                return row;
+                return (r, conv) => (T)(object)MaterializeDynamic(r);
             }
 
-            // 3. Strongly-typed POCO entity materialization
             var schemaKey = ComputeSchemaKey(reader);
             var cacheKey = (targetType, schemaKey);
 
@@ -81,7 +66,67 @@ namespace ZeroData.Sql.Execution
                 DelegateCache[cacheKey] = materializer;
             }
 
-            return materializer(reader, converters);
+            return (r, conv) => (T)materializer(r, conv);
+        }
+
+        /// <summary>
+        /// Pre-resolves and caches the row materialization delegate for targetType based on the reader's schema.
+        /// Call this once before reader.Read() loops to avoid computing schema keys and looking up dictionaries per row.
+        /// </summary>
+        public static Func<IDataReader, ValueConverterCollection, object> GetMaterializer(Type targetType, IDataReader reader)
+        {
+            if (targetType == null)
+                throw new ArgumentNullException(nameof(targetType));
+
+            if (IsScalarType(targetType))
+            {
+                return (r, conv) => MaterializeScalar(r, targetType, conv);
+            }
+
+            if (targetType == typeof(object) || targetType == typeof(ZeroRow) || targetType == typeof(IDictionary<string, object>))
+            {
+                return (r, conv) => MaterializeDynamic(r);
+            }
+
+            var schemaKey = ComputeSchemaKey(reader);
+            var cacheKey = (targetType, schemaKey);
+
+            if (!DelegateCache.TryGetValue(cacheKey, out var materializer))
+            {
+                materializer = BuildMaterializer(targetType, reader);
+                DelegateCache[cacheKey] = materializer;
+            }
+
+            return materializer;
+        }
+
+        private static object MaterializeScalar(IDataReader reader, Type targetType, ValueConverterCollection converters)
+        {
+            if (reader.IsDBNull(0))
+            {
+                return targetType.IsValueType && Nullable.GetUnderlyingType(targetType) == null
+                    ? Activator.CreateInstance(targetType)
+                    : null;
+            }
+
+            var rawValue = reader.GetValue(0);
+            if (converters != null && converters.HasConverter(targetType))
+            {
+                return converters.ConvertFromDb(rawValue, targetType);
+            }
+            return FastConvert.ChangeType(rawValue, targetType);
+        }
+
+        private static ZeroRow MaterializeDynamic(IDataReader reader)
+        {
+            var row = new ZeroRow(reader.FieldCount);
+            for (int i = 0; i < reader.FieldCount; i++)
+            {
+                var name = reader.GetName(i);
+                var val = reader.IsDBNull(i) ? null : reader.GetValue(i);
+                row[name] = val;
+            }
+            return row;
         }
 
         private static bool IsScalarType(Type type)

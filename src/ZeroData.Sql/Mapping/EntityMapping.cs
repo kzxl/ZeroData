@@ -24,6 +24,9 @@ namespace ZeroData.Sql.Mapping
 
         /// <summary>Compiled expression delegate for reading the property value with zero reflection.</summary>
         public Func<object, object> Getter { get; set; }
+
+        /// <summary>Compiled expression delegate for setting the property value with zero reflection.</summary>
+        public Action<object, object> Setter { get; set; }
     }
 
     /// <summary>
@@ -184,6 +187,23 @@ namespace ZeroData.Sql.Mapping
                 catch
                 {
                     col.Getter = obj => col.Property.GetValue(obj);
+                }
+
+                if (col.Property.CanWrite)
+                {
+                    try
+                    {
+                        var targetParam = Expression.Parameter(typeof(object), "target");
+                        var valParam = Expression.Parameter(typeof(object), "val");
+                        var castTarget = Expression.Convert(targetParam, type);
+                        var castVal = Expression.Convert(valParam, col.Property.PropertyType);
+                        var assign = Expression.Assign(Expression.Property(castTarget, col.Property), castVal);
+                        col.Setter = Expression.Lambda<Action<object, object>>(assign, targetParam, valParam).Compile();
+                    }
+                    catch
+                    {
+                        col.Setter = (target, val) => col.Property.SetValue(target, val);
+                    }
                 }
             }
 

@@ -76,9 +76,10 @@ namespace ZeroData.Sql
                 using (var reader = cmd.ExecuteReader())
                 {
                     var results = new List<T>();
+                    var materializer = EntityMaterializer.GetMaterializer<T>(reader);
                     while (reader.Read())
                     {
-                        results.Add(EntityMaterializer.Materialize<T>(reader, converters));
+                        results.Add(materializer(reader, converters));
                     }
                     return results;
                 }
@@ -130,9 +131,10 @@ namespace ZeroData.Sql
                 using (var reader = cmd.ExecuteReader())
                 {
                     var results = new List<object>();
+                    var materializer = EntityMaterializer.GetMaterializer(type, reader);
                     while (reader.Read())
                     {
-                        results.Add(EntityMaterializer.Materialize(reader, type, converters));
+                        results.Add(materializer(reader, converters));
                     }
                     return results;
                 }
@@ -217,9 +219,10 @@ namespace ZeroData.Sql
                         using (var reader = await dbCmd.ExecuteReaderAsync(CommandBehavior.Default, cancellationToken).ConfigureAwait(false))
                         {
                             var results = new List<T>();
+                            var materializer = EntityMaterializer.GetMaterializer<T>(reader);
                             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                             {
-                                results.Add(EntityMaterializer.Materialize<T>(reader, converters));
+                                results.Add(materializer(reader, converters));
                             }
                             return results;
                         }
@@ -229,9 +232,10 @@ namespace ZeroData.Sql
                         using (var reader = cmd.ExecuteReader())
                         {
                             var results = new List<T>();
+                            var materializer = EntityMaterializer.GetMaterializer<T>(reader);
                             while (reader.Read())
                             {
-                                results.Add(EntityMaterializer.Materialize<T>(reader, converters));
+                                results.Add(materializer(reader, converters));
                             }
                             return results;
                         }
@@ -279,9 +283,10 @@ namespace ZeroData.Sql
                     {
                         using (var reader = await dbCmd.ExecuteReaderAsync(CommandBehavior.Default, cancellationToken).ConfigureAwait(false))
                         {
+                            var materializer = EntityMaterializer.GetMaterializer<T>(reader);
                             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                             {
-                                yield return EntityMaterializer.Materialize<T>(reader, converters);
+                                yield return materializer(reader, converters);
                             }
                         }
                     }
@@ -289,10 +294,11 @@ namespace ZeroData.Sql
                     {
                         using (var reader = cmd.ExecuteReader())
                         {
+                            var materializer = EntityMaterializer.GetMaterializer<T>(reader);
                             while (reader.Read())
                             {
                                 cancellationToken.ThrowIfCancellationRequested();
-                                yield return EntityMaterializer.Materialize<T>(reader, converters);
+                                yield return materializer(reader, converters);
                             }
                         }
                     }

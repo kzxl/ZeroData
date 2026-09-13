@@ -230,6 +230,64 @@ namespace ZeroData.Sql.ChangeTracking
         }
 
         /// <summary>
+        /// Detects all modified entities across all tracked types in a single linear pass (O(M)).
+        /// Avoids N-table quadratic scans over the snapshot dictionary.
+        /// </summary>
+        public List<TrackedEntity> DetectAllChanges(Func<Type, EntityMapping> mappingLookup)
+        {
+            if (mappingLookup == null) throw new ArgumentNullException(nameof(mappingLookup));
+            var updates = new List<TrackedEntity>();
+
+            foreach (var kvp in _originalValues)
+            {
+                var entity = kvp.Key;
+                var originalSnapshot = kvp.Value;
+                var entityType = entity.GetType();
+
+                // Do not detect updates for entities that are already pending deletion or insertion
+                var existing = _trackedEntities.FirstOrDefault(e => ReferenceEquals(e.Entity, entity));
+                if (existing != null && (existing.State == EntityState.Delete || existing.State == EntityState.Insert))
+                    continue;
+
+                var mapping = mappingLookup(entityType);
+                if (mapping == null) continue;
+
+                var changedProps = new List<string>();
+
+                foreach (var col in mapping.UpdatableColumns)
+                {
+                    var currentValue = col.Getter != null ? col.Getter(entity) : GetCompiledGetter(col.Property)(entity);
+                    var originalValue = originalSnapshot.ContainsKey(col.Property.Name)
+                        ? originalSnapshot[col.Property.Name]
+                        : null;
+
+                    if (!Equals(currentValue, originalValue))
+                    {
+                        changedProps.Add(col.Property.Name);
+                    }
+                }
+
+                if (changedProps.Count > 0)
+                {
+                    if (existing != null && existing.State == EntityState.Update)
+                    {
+                        if (existing.ChangedProperties == null || existing.ChangedProperties.Count == 0)
+                            existing.ChangedProperties = changedProps;
+                    }
+                    else
+                    {
+                        updates.Add(new TrackedEntity(entity, mapping.EntityType, EntityState.Update)
+                        {
+                            ChangedProperties = changedProps
+                        });
+                    }
+                }
+            }
+
+            return updates;
+        }
+
+        /// <summary>
         /// Returns all pending changes (inserts, deletes, and detected updates).
         /// </summary>
         public IReadOnlyList<TrackedEntity> GetPendingChanges()

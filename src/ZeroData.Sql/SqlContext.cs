@@ -1206,9 +1206,13 @@ namespace ZeroData.Sql
 
         private static void SetPkValue(ColumnMapping pk, object entity, long id)
         {
-            if (id <= 0) return;
+            if (id <= 0 || pk == null) return;
             var t = Nullable.GetUnderlyingType(pk.Property.PropertyType) ?? pk.Property.PropertyType;
-            pk.Property.SetValue(entity, Convert.ChangeType(id, t));
+            var converted = Convert.ChangeType(id, t);
+            if (pk.Setter != null)
+                pk.Setter(entity, converted);
+            else
+                pk.Property.SetValue(entity, converted);
         }
 
         #endregion
@@ -1217,12 +1221,8 @@ namespace ZeroData.Sql
 
         private void DetectAllChanges()
         {
-            foreach (var tableType in _tables.Keys)
-            {
-                var mapping = MappingCache.GetMapping(tableType);
-                var updates = _changeTracker.DetectChanges(mapping);
-                if (updates.Count > 0) _changeTracker.AddUpdates(updates);
-            }
+            var updates = _changeTracker.DetectAllChanges(type => MappingCache.GetMapping(type));
+            if (updates.Count > 0) _changeTracker.AddUpdates(updates);
         }
 
         private (string sql, DynamicParameters dp) ConvertParams(string query, object[] parameters)
