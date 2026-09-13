@@ -118,5 +118,13 @@ namespace ZeroData.Sql.Dialects
             var intoClauses = parameterRows.Select(r => $"INTO {tableName} ({cols}) VALUES ({string.Join(", ", r)})");
             return $"INSERT ALL {string.Join(" ", intoClauses)} SELECT * FROM dual";
         }
+
+        public bool SupportsSavepoints => true;
+
+        public string GetCreateSavepointSql(string name) => $"SAVEPOINT {QuoteIdentifier(name)}";
+
+        public string GetRollbackSavepointSql(string name) => $"ROLLBACK TO SAVEPOINT {QuoteIdentifier(name)}";
+
+        public string GetReleaseSavepointSql(string name) => null;
     }
 }

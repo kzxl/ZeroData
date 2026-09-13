@@ -187,6 +187,202 @@ namespace ZeroData.Sql
 
         #endregion
 
+        #region Transaction and Savepoint Management
+
+        /// <summary>
+        /// Begins a database transaction with the specified isolation level.
+        /// </summary>
+        public IDbTransaction BeginTransaction(IsolationLevel isolationLevel = IsolationLevel.Unspecified)
+        {
+            ThrowIfDisposed();
+            EnsureConnectionOpen();
+            Transaction = isolationLevel == IsolationLevel.Unspecified
+                ? Connection.BeginTransaction()
+                : Connection.BeginTransaction(isolationLevel);
+            return Transaction;
+        }
+
+        /// <summary>
+        /// Commits the active database transaction and disposes it.
+        /// </summary>
+        public void CommitTransaction()
+        {
+            ThrowIfDisposed();
+            if (Transaction == null)
+                throw new InvalidOperationException("No active transaction to commit.");
+            Transaction.Commit();
+            Transaction.Dispose();
+            Transaction = null;
+        }
+
+        /// <summary>
+        /// Rolls back the active database transaction and disposes it.
+        /// </summary>
+        public void RollbackTransaction()
+        {
+            ThrowIfDisposed();
+            if (Transaction == null)
+                throw new InvalidOperationException("No active transaction to rollback.");
+            Transaction.Rollback();
+            Transaction.Dispose();
+            Transaction = null;
+        }
+
+        /// <summary>
+        /// Creates a named savepoint within the current transaction.
+        /// </summary>
+        public void CreateSavepoint(string name)
+        {
+            ThrowIfDisposed();
+            if (string.IsNullOrWhiteSpace(name))
+                throw new ArgumentException("Savepoint name cannot be null or whitespace.", nameof(name));
+            if (Transaction == null)
+                throw new InvalidOperationException("Cannot create a savepoint without an active transaction. Call BeginTransaction() first.");
+
+            var sql = _dialect.GetCreateSavepointSql(name);
+            if (!string.IsNullOrWhiteSpace(sql))
+            {
+                using var cmd = Connection.CreateCommand();
+                cmd.Transaction = Transaction;
+                cmd.CommandText = sql;
+                cmd.CommandTimeout = CommandTimeout;
+                cmd.ExecuteNonQuery();
+            }
+        }
+
+        /// <summary>
+        /// Rolls back the current transaction to a named savepoint without aborting the entire transaction.
+        /// </summary>
+        public void RollbackToSavepoint(string name)
+        {
+            ThrowIfDisposed();
+            if (string.IsNullOrWhiteSpace(name))
+                throw new ArgumentException("Savepoint name cannot be null or whitespace.", nameof(name));
+            if (Transaction == null)
+                throw new InvalidOperationException("Cannot rollback to a savepoint without an active transaction.");
+
+            var sql = _dialect.GetRollbackSavepointSql(name);
+            if (!string.IsNullOrWhiteSpace(sql))
+            {
+                using var cmd = Connection.CreateCommand();
+                cmd.Transaction = Transaction;
+                cmd.CommandText = sql;
+                cmd.CommandTimeout = CommandTimeout;
+                cmd.ExecuteNonQuery();
+            }
+        }
+
+        /// <summary>
+        /// Releases a named savepoint if supported by the database dialect.
+        /// </summary>
+        public void ReleaseSavepoint(string name)
+        {
+            ThrowIfDisposed();
+            if (string.IsNullOrWhiteSpace(name))
+                throw new ArgumentException("Savepoint name cannot be null or whitespace.", nameof(name));
+            if (Transaction == null)
+                throw new InvalidOperationException("Cannot release a savepoint without an active transaction.");
+
+            var sql = _dialect.GetReleaseSavepointSql(name);
+            if (!string.IsNullOrWhiteSpace(sql))
+            {
+                using var cmd = Connection.CreateCommand();
+                cmd.Transaction = Transaction;
+                cmd.CommandText = sql;
+                cmd.CommandTimeout = CommandTimeout;
+                cmd.ExecuteNonQuery();
+            }
+        }
+
+        /// <summary>
+        /// Creates a named savepoint within the current transaction asynchronously.
+        /// </summary>
+        public async Task CreateSavepointAsync(string name, CancellationToken cancellationToken = default)
+        {
+            ThrowIfDisposed();
+            if (string.IsNullOrWhiteSpace(name))
+                throw new ArgumentException("Savepoint name cannot be null or whitespace.", nameof(name));
+            if (Transaction == null)
+                throw new InvalidOperationException("Cannot create a savepoint without an active transaction. Call BeginTransaction() first.");
+
+            var sql = _dialect.GetCreateSavepointSql(name);
+            if (!string.IsNullOrWhiteSpace(sql))
+            {
+                using var cmd = Connection.CreateCommand();
+                cmd.Transaction = Transaction;
+                cmd.CommandText = sql;
+                cmd.CommandTimeout = CommandTimeout;
+                if (cmd is DbCommand dbCmd)
+                {
+                    await dbCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
+        /// <summary>
+        /// Rolls back the current transaction to a named savepoint asynchronously.
+        /// </summary>
+        public async Task RollbackToSavepointAsync(string name, CancellationToken cancellationToken = default)
+        {
+            ThrowIfDisposed();
+            if (string.IsNullOrWhiteSpace(name))
+                throw new ArgumentException("Savepoint name cannot be null or whitespace.", nameof(name));
+            if (Transaction == null)
+                throw new InvalidOperationException("Cannot rollback to a savepoint without an active transaction.");
+
+            var sql = _dialect.GetRollbackSavepointSql(name);
+            if (!string.IsNullOrWhiteSpace(sql))
+            {
+                using var cmd = Connection.CreateCommand();
+                cmd.Transaction = Transaction;
+                cmd.CommandText = sql;
+                cmd.CommandTimeout = CommandTimeout;
+                if (cmd is DbCommand dbCmd)
+                {
+                    await dbCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
+        /// <summary>
+        /// Releases a named savepoint asynchronously if supported by the database dialect.
+        /// </summary>
+        public async Task ReleaseSavepointAsync(string name, CancellationToken cancellationToken = default)
+        {
+            ThrowIfDisposed();
+            if (string.IsNullOrWhiteSpace(name))
+                throw new ArgumentException("Savepoint name cannot be null or whitespace.", nameof(name));
+            if (Transaction == null)
+                throw new InvalidOperationException("Cannot release a savepoint without an active transaction.");
+
+            var sql = _dialect.GetReleaseSavepointSql(name);
+            if (!string.IsNullOrWhiteSpace(sql))
+            {
+                using var cmd = Connection.CreateCommand();
+                cmd.Transaction = Transaction;
+                cmd.CommandText = sql;
+                cmd.CommandTimeout = CommandTimeout;
+                if (cmd is DbCommand dbCmd)
+                {
+                    await dbCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
+        #endregion
+
         #region Core Sync Methods
 
         public Table<T> GetTable<T>() where T : class

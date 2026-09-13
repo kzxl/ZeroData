@@ -118,5 +118,13 @@ namespace ZeroData.Sql.Dialects
             var rows = string.Join(", ", System.Linq.Enumerable.Select(parameterRows, r => $"({string.Join(", ", r)})"));
             return $"INSERT INTO {tableName} ({cols}) VALUES {rows}";
         }
+
+        public bool SupportsSavepoints => true;
+
+        public string GetCreateSavepointSql(string name) => $"SAVE TRANSACTION {QuoteIdentifier(name)};";
+
+        public string GetRollbackSavepointSql(string name) => $"ROLLBACK TRANSACTION {QuoteIdentifier(name)};";
+
+        public string GetReleaseSavepointSql(string name) => null;
     }
 }

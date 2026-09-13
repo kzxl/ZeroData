@@ -85,5 +85,25 @@ namespace ZeroData.Sql.Dialects
         /// Generates a bulk insert SQL statement for the dialect.
         /// </summary>
         string GenerateBulkInsertSql(string tableName, System.Collections.Generic.IReadOnlyList<string> columns, System.Collections.Generic.IReadOnlyList<System.Collections.Generic.IReadOnlyList<string>> parameterRows);
+
+        /// <summary>
+        /// Gets a value indicating whether this database dialect supports transaction savepoints.
+        /// </summary>
+        bool SupportsSavepoints { get; }
+
+        /// <summary>
+        /// Generates SQL to create a transaction savepoint.
+        /// </summary>
+        string GetCreateSavepointSql(string name);
+
+        /// <summary>
+        /// Generates SQL to rollback a transaction to a named savepoint.
+        /// </summary>
+        string GetRollbackSavepointSql(string name);
+
+        /// <summary>
+        /// Generates SQL to release a named savepoint. Returns null or empty string if not supported/needed.
+        /// </summary>
+        string GetReleaseSavepointSql(string name);
     }
 }
