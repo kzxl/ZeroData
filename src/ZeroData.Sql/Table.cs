@@ -153,9 +153,9 @@ namespace ZeroData.Sql
 
         /// <summary>
         /// Deletes an entity directly by primary key without fetching it first.
-        /// Executes a single DELETE statement on the database server.
+        /// Executes a single DELETE (or soft-delete UPDATE) statement on the database server.
         /// </summary>
-        public int DeleteById(object id)
+        public int DeleteById(object id, bool forceHardDelete = false)
         {
             if (id == null) throw new ArgumentNullException(nameof(id));
             var mapping = MappingCache.GetMapping<T>();
@@ -165,19 +165,37 @@ namespace ZeroData.Sql
 
             var pk = pks[0];
             var dialect = _context.Dialect;
-            var sql = $"DELETE FROM {SqlGenerator.QuoteTableName(mapping.TableName, dialect)} WHERE {dialect.QuoteIdentifier(pk.ColumnName)} = @id";
+
+            var softDelete = !forceHardDelete ? mapping.EntityType
+                .GetCustomAttributes(typeof(SoftDeleteAttribute), true)
+                .FirstOrDefault() as SoftDeleteAttribute : null;
+
+            string sql;
             var dp = new DynamicParameters();
             dp.Add("@id", id);
 
+            if (softDelete != null)
+            {
+                var trueLiteral = dialect.ProviderName == "PostgreSQL" ? "TRUE" : "1";
+                sql = $"UPDATE {SqlGenerator.QuoteTableName(mapping.TableName, dialect)} SET {dialect.QuoteIdentifier(softDelete.ColumnName)} = {trueLiteral} WHERE {dialect.QuoteIdentifier(pk.ColumnName)} = @id";
+            }
+            else
+            {
+                sql = $"DELETE FROM {SqlGenerator.QuoteTableName(mapping.TableName, dialect)} WHERE {dialect.QuoteIdentifier(pk.ColumnName)} = @id";
+            }
+
             _context.EnsureConnectionOpen();
-            return _context.Connection.Execute(sql, dp,
+            var rows = _context.Connection.Execute(sql, dp,
                 transaction: _context.Transaction, commandTimeout: _context.CommandTimeout);
+
+            _changeTracker.DetachByKey(mapping, id);
+            return rows;
         }
 
         /// <summary>
         /// Asynchronously deletes an entity directly by primary key without fetching it first.
         /// </summary>
-        public async Task<int> DeleteByIdAsync(object id, CancellationToken ct = default)
+        public async Task<int> DeleteByIdAsync(object id, bool forceHardDelete = false, CancellationToken ct = default)
         {
             if (id == null) throw new ArgumentNullException(nameof(id));
             var mapping = MappingCache.GetMapping<T>();
@@ -187,19 +205,38 @@ namespace ZeroData.Sql
 
             var pk = pks[0];
             var dialect = _context.Dialect;
-            var sql = $"DELETE FROM {SqlGenerator.QuoteTableName(mapping.TableName, dialect)} WHERE {dialect.QuoteIdentifier(pk.ColumnName)} = @id";
+
+            var softDelete = !forceHardDelete ? mapping.EntityType
+                .GetCustomAttributes(typeof(SoftDeleteAttribute), true)
+                .FirstOrDefault() as SoftDeleteAttribute : null;
+
+            string sql;
             var dp = new DynamicParameters();
             dp.Add("@id", id);
 
+            if (softDelete != null)
+            {
+                var trueLiteral = dialect.ProviderName == "PostgreSQL" ? "TRUE" : "1";
+                sql = $"UPDATE {SqlGenerator.QuoteTableName(mapping.TableName, dialect)} SET {dialect.QuoteIdentifier(softDelete.ColumnName)} = {trueLiteral} WHERE {dialect.QuoteIdentifier(pk.ColumnName)} = @id";
+            }
+            else
+            {
+                sql = $"DELETE FROM {SqlGenerator.QuoteTableName(mapping.TableName, dialect)} WHERE {dialect.QuoteIdentifier(pk.ColumnName)} = @id";
+            }
+
             await _context.EnsureConnectionOpenAsync(ct).ConfigureAwait(false);
-            return await _context.Connection.ExecuteAsync(new CommandDefinition(sql, dp,
+            var rows = await _context.Connection.ExecuteAsync(new CommandDefinition(sql, dp,
                 transaction: _context.Transaction, commandTimeout: _context.CommandTimeout, cancellationToken: ct)).ConfigureAwait(false);
+
+            _changeTracker.DetachByKey(mapping, id);
+            return rows;
         }
 
         /// <summary>
         /// Deletes all entities matching the specified predicate directly on the server without loading them into memory.
+        /// Respects SoftDeleteAttribute unless forceHardDelete is true.
         /// </summary>
-        public int DeleteWhere(Expression<Func<T, bool>> predicate)
+        public int DeleteWhere(Expression<Func<T, bool>> predicate, bool forceHardDelete = false)
         {
             if (predicate == null) throw new ArgumentNullException(nameof(predicate));
             var mapping = MappingCache.GetMapping<T>();
@@ -207,7 +244,21 @@ namespace ZeroData.Sql
             var builder = new WhereBuilder(mapping, dialect);
             var (whereSql, parameters) = builder.Build(predicate);
 
-            var sql = $"DELETE FROM {SqlGenerator.QuoteTableName(mapping.TableName, dialect)} WHERE {whereSql}";
+            var softDelete = !forceHardDelete ? mapping.EntityType
+                .GetCustomAttributes(typeof(SoftDeleteAttribute), true)
+                .FirstOrDefault() as SoftDeleteAttribute : null;
+
+            string sql;
+            if (softDelete != null)
+            {
+                var trueLiteral = dialect.ProviderName == "PostgreSQL" ? "TRUE" : "1";
+                sql = $"UPDATE {SqlGenerator.QuoteTableName(mapping.TableName, dialect)} SET {dialect.QuoteIdentifier(softDelete.ColumnName)} = {trueLiteral} WHERE {whereSql}";
+            }
+            else
+            {
+                sql = $"DELETE FROM {SqlGenerator.QuoteTableName(mapping.TableName, dialect)} WHERE {whereSql}";
+            }
+
             var dp = new DynamicParameters();
             if (parameters != null)
             {
@@ -215,14 +266,17 @@ namespace ZeroData.Sql
             }
 
             _context.EnsureConnectionOpen();
-            return _context.Connection.Execute(sql, dp,
+            var rows = _context.Connection.Execute(sql, dp,
                 transaction: _context.Transaction, commandTimeout: _context.CommandTimeout);
+
+            DetachMatchingTracked(predicate);
+            return rows;
         }
 
         /// <summary>
         /// Asynchronously deletes all entities matching the specified predicate directly on the server.
         /// </summary>
-        public async Task<int> DeleteWhereAsync(Expression<Func<T, bool>> predicate, CancellationToken ct = default)
+        public async Task<int> DeleteWhereAsync(Expression<Func<T, bool>> predicate, bool forceHardDelete = false, CancellationToken ct = default)
         {
             if (predicate == null) throw new ArgumentNullException(nameof(predicate));
             var mapping = MappingCache.GetMapping<T>();
@@ -230,7 +284,21 @@ namespace ZeroData.Sql
             var builder = new WhereBuilder(mapping, dialect);
             var (whereSql, parameters) = builder.Build(predicate);
 
-            var sql = $"DELETE FROM {SqlGenerator.QuoteTableName(mapping.TableName, dialect)} WHERE {whereSql}";
+            var softDelete = !forceHardDelete ? mapping.EntityType
+                .GetCustomAttributes(typeof(SoftDeleteAttribute), true)
+                .FirstOrDefault() as SoftDeleteAttribute : null;
+
+            string sql;
+            if (softDelete != null)
+            {
+                var trueLiteral = dialect.ProviderName == "PostgreSQL" ? "TRUE" : "1";
+                sql = $"UPDATE {SqlGenerator.QuoteTableName(mapping.TableName, dialect)} SET {dialect.QuoteIdentifier(softDelete.ColumnName)} = {trueLiteral} WHERE {whereSql}";
+            }
+            else
+            {
+                sql = $"DELETE FROM {SqlGenerator.QuoteTableName(mapping.TableName, dialect)} WHERE {whereSql}";
+            }
+
             var dp = new DynamicParameters();
             if (parameters != null)
             {
@@ -238,8 +306,40 @@ namespace ZeroData.Sql
             }
 
             await _context.EnsureConnectionOpenAsync(ct).ConfigureAwait(false);
-            return await _context.Connection.ExecuteAsync(new CommandDefinition(sql, dp,
+            var rows = await _context.Connection.ExecuteAsync(new CommandDefinition(sql, dp,
                 transaction: _context.Transaction, commandTimeout: _context.CommandTimeout, cancellationToken: ct)).ConfigureAwait(false);
+
+            DetachMatchingTracked(predicate);
+            return rows;
+        }
+
+        private void DetachMatchingTracked(Expression<Func<T, bool>> predicate)
+        {
+            try
+            {
+                var compiled = ExpressionCache.GetOrAdd(predicate);
+                var toDetach = _changeTracker.Entries<T>()
+                    .Where(e => compiled(e.Entity))
+                    .Select(e => e.Entity)
+                    .ToList();
+                foreach (var entity in toDetach)
+                {
+                    _changeTracker.Detach(entity);
+                }
+            }
+            catch
+            {
+                // In case predicate cannot be evaluated in memory (e.g. database-specific methods)
+            }
+        }
+
+        /// <summary>
+        /// Detaches an entity from change tracking.
+        /// </summary>
+        public void Detach(T entity)
+        {
+            if (entity == null) throw new ArgumentNullException(nameof(entity));
+            _changeTracker.Detach(entity);
         }
 
         /// <summary>
@@ -250,7 +350,7 @@ namespace ZeroData.Sql
         /// <summary>
         /// Asynchronously finds an entity quickly by primary key.
         /// </summary>
-        public Task<T> GetAsync(object id, CancellationToken ct = default) => FindInternalAsync(new object[] { id });
+        public Task<T> GetAsync(object id, CancellationToken ct = default) => FindInternalAsync(new object[] { id }, ct);
 
         public void InsertOnSubmit(T entity)
         {
@@ -830,37 +930,15 @@ namespace ZeroData.Sql
         /// <summary>
         /// Server-side DELETE without loading entities.
         /// Deletes all rows matching the predicate in a single SQL statement.
+        /// Respects SoftDeleteAttribute unless hard delete is required.
         /// </summary>
-        public int BatchDelete(Expression<Func<T, bool>> predicate)
-        {
-            var mapping = MappingCache.GetMapping<T>();
-            var tableName = SqlGenerator.QuoteTableName(mapping.TableName, _context.Dialect);
-            var builder = new WhereBuilder(mapping, _context.Dialect);
-            var (whereSql, whereParams) = builder.Build(predicate);
-            var sql = $"DELETE FROM {tableName} WHERE {whereSql}";
-            _context.EnsureConnectionOpen();
-            return _context.Connection.Execute(sql, (object)ToDp(whereParams),
-                transaction: _context.Transaction, commandTimeout: _context.CommandTimeout);
-        }
+        public int BatchDelete(Expression<Func<T, bool>> predicate) => DeleteWhere(predicate);
 
         /// <summary>
         /// Async server-side DELETE without loading entities.
         /// </summary>
-        public async Task<int> BatchDeleteAsync(Expression<Func<T, bool>> predicate,
-            CancellationToken ct = default)
-        {
-            var mapping = MappingCache.GetMapping<T>();
-            var tableName = SqlGenerator.QuoteTableName(mapping.TableName, _context.Dialect);
-            var builder = new WhereBuilder(mapping, _context.Dialect);
-            var (whereSql, whereParams) = builder.Build(predicate);
-            var sql = $"DELETE FROM {tableName} WHERE {whereSql}";
-            await _context.EnsureConnectionOpenAsync(ct).ConfigureAwait(false);
-            return await _context.Connection.ExecuteAsync(
-                new CommandDefinition(sql, ToDp(whereParams),
-                    transaction: _context.Transaction,
-                    commandTimeout: _context.CommandTimeout,
-                    cancellationToken: ct)).ConfigureAwait(false);
-        }
+        public Task<int> BatchDeleteAsync(Expression<Func<T, bool>> predicate, CancellationToken ct = default)
+            => DeleteWhereAsync(predicate, forceHardDelete: false, ct: ct);
 
         /// <summary>
         /// Server-side UPDATE without loading entities.
@@ -969,7 +1047,7 @@ namespace ZeroData.Sql
         /// </summary>
         public async Task<T> FindAsync(params object[] keyValues)
         {
-            return await FindInternalAsync(keyValues).ConfigureAwait(false);
+            return await FindInternalAsync(keyValues, default).ConfigureAwait(false);
         }
 
         /// <summary>
@@ -977,7 +1055,7 @@ namespace ZeroData.Sql
         /// </summary>
         public async Task<T> FindAsync(CancellationToken ct, params object[] keyValues)
         {
-            return await FindInternalAsync(keyValues).ConfigureAwait(false);
+            return await FindInternalAsync(keyValues, ct).ConfigureAwait(false);
         }
 
         /// <summary>
@@ -1210,20 +1288,21 @@ namespace ZeroData.Sql
             return entity;
         }
 
-        private async Task<T> FindInternalAsync(object[] keyValues)
+        private async Task<T> FindInternalAsync(object[] keyValues, CancellationToken ct = default)
         {
             var mapping = MappingCache.GetMapping<T>();
             var pks = mapping.PrimaryKeys.ToList();
             ValidateKeyValues(pks, keyValues);
 
             var (sql, dp) = BuildFindSql(mapping, pks, keyValues);
-            await _context.EnsureConnectionOpenAsync().ConfigureAwait(false);
-            var entity = await _context.Connection.QueryFirstOrDefaultAsync<T>(sql, dp,
-                transaction: _context.Transaction, commandTimeout: _context.CommandTimeout).ConfigureAwait(false);
+            await _context.EnsureConnectionOpenAsync(ct).ConfigureAwait(false);
+            var entity = await _context.Connection.QueryFirstOrDefaultAsync<T>(
+                new CommandDefinition(sql, dp, transaction: _context.Transaction,
+                    commandTimeout: _context.CommandTimeout, cancellationToken: ct)).ConfigureAwait(false);
             if (entity != null)
             {
                 TrackSingle(entity, mapping);
-                await LoadAssociationsAsync(new List<T> { entity }, mapping).ConfigureAwait(false);
+                await LoadAssociationsAsync(new List<T> { entity }, mapping, ct).ConfigureAwait(false);
             }
             return entity;
         }
@@ -1475,19 +1554,38 @@ namespace ZeroData.Sql
             var columnList = selectBuilder.Build(selector);
             var tableName = SqlGenerator.QuoteTableName(mapping.TableName, _context.Dialect);
 
-            IDictionary<string, object> parameters = null;
-            string fullSql;
+            var whereParts = new List<string>();
+            IDictionary<string, object> allParams = new Dictionary<string, object>();
+
+            // Inject global filters
+            if (!_ignoreFilters && _context.Filters.HasFilters)
+            {
+                var filters = _context.Filters.GetFilters(typeof(T));
+                if (filters.Count > 0)
+                {
+                    var filterBuilder = new WhereBuilder(mapping, _context.Dialect);
+                    foreach (var filter in filters)
+                    {
+                        var (fSql, fParams) = filterBuilder.BuildFromLambda(filter);
+                        whereParts.Add(fSql);
+                        if (fParams != null)
+                            foreach (var kv in fParams) allParams[kv.Key] = kv.Value;
+                    }
+                }
+            }
+
             if (predicate != null)
             {
                 var builder = new WhereBuilder(mapping, _context.Dialect);
                 var (whereSql, whereParams) = builder.Build(predicate);
-                parameters = whereParams;
-                fullSql = $"SELECT {columnList} FROM {tableName} WHERE {whereSql}";
+                whereParts.Add("(" + whereSql + ")");
+                if (whereParams != null)
+                    foreach (var kv in whereParams) allParams[kv.Key] = kv.Value;
             }
-            else
-            {
-                fullSql = $"SELECT {columnList} FROM {tableName}";
-            }
+
+            var fullSql = whereParts.Count > 0
+                ? $"SELECT {columnList} FROM {tableName} WHERE {string.Join(" AND ", whereParts)}"
+                : $"SELECT {columnList} FROM {tableName}";
 
             // ORDER BY
             if (orderByClauses != null && orderByClauses.Count > 0)
@@ -1496,7 +1594,7 @@ namespace ZeroData.Sql
             // Pagination (dialect-aware)
             fullSql = ApplyPagination(fullSql, orderByClauses, skip, take);
 
-            return (fullSql, ToDp(parameters));
+            return (fullSql, ToDp(allParams));
         }
 
         #endregion

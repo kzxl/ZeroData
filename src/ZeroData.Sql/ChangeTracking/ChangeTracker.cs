@@ -1,4 +1,4 @@
-﻿using ZeroData.Sql.Mapping;
+using ZeroData.Sql.Mapping;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -45,14 +45,39 @@ namespace ZeroData.Sql.ChangeTracking
         /// </summary>
         public void TrackInsert<T>(T entity) where T : class
         {
+            if (entity == null) throw new ArgumentNullException(nameof(entity));
+
+            var existing = _trackedEntities.FirstOrDefault(e => ReferenceEquals(e.Entity, entity));
+            if (existing != null)
+            {
+                if (existing.State == EntityState.Insert) return;
+                _trackedEntities.Remove(existing);
+            }
+            _originalValues.Remove(entity);
             _trackedEntities.Add(new TrackedEntity(entity, typeof(T), EntityState.Insert));
         }
 
         /// <summary>
-        /// Marks an entity for deletion.
+        /// Marks an entity for deletion. If the entity was newly added (state=Insert),
+        /// deleting it cancels the pending insertion.
         /// </summary>
         public void TrackDelete<T>(T entity) where T : class
         {
+            if (entity == null) throw new ArgumentNullException(nameof(entity));
+
+            var existing = _trackedEntities.FirstOrDefault(e => ReferenceEquals(e.Entity, entity));
+            if (existing != null)
+            {
+                if (existing.State == EntityState.Insert)
+                {
+                    // Canceling an uncommitted insert
+                    _trackedEntities.Remove(existing);
+                    _originalValues.Remove(entity);
+                    return;
+                }
+                if (existing.State == EntityState.Delete) return;
+                _trackedEntities.Remove(existing);
+            }
             _trackedEntities.Add(new TrackedEntity(entity, typeof(T), EntityState.Delete));
         }
 
@@ -90,17 +115,67 @@ namespace ZeroData.Sql.ChangeTracking
         }
 
         /// <summary>
-        /// Explicitly marks an entity as modified (for Attach with asModified=true).
+        /// Explicitly marks an entity as modified (for Attach with asModified=true or Update).
         /// </summary>
         public void TrackUpdate(object entity, Type entityType)
         {
             if (entity == null) return;
+
+            var existing = _trackedEntities.FirstOrDefault(e => ReferenceEquals(e.Entity, entity));
+            if (existing != null)
+            {
+                if (existing.State == EntityState.Insert) return; // Keep as Insert so it creates the row
+                if (existing.State == EntityState.Update) return; // Avoid duplicate update entry
+                _trackedEntities.Remove(existing);
+            }
             _trackedEntities.Add(new TrackedEntity(entity, entityType, EntityState.Update));
+        }
+
+        /// <summary>
+        /// Detaches an entity from change tracking.
+        /// </summary>
+        public bool Detach(object entity)
+        {
+            if (entity == null) return false;
+            bool removedFromPending = _trackedEntities.RemoveAll(e => ReferenceEquals(e.Entity, entity)) > 0;
+            bool removedFromOriginal = _originalValues.Remove(entity);
+            return removedFromPending || removedFromOriginal;
+        }
+
+        /// <summary>
+        /// Detaches any tracked entity matching the specified primary key value.
+        /// </summary>
+        public void DetachByKey(EntityMapping mapping, object keyValue)
+        {
+            if (mapping == null || keyValue == null || mapping.PrimaryKeys.Count != 1)
+                return;
+
+            var pkProp = mapping.PrimaryKeys[0].Property;
+            var getter = GetCompiledGetter(pkProp);
+
+            var toRemovePending = _trackedEntities
+                .Where(e => e.EntityType == mapping.EntityType && Equals(getter(e.Entity), keyValue))
+                .ToList();
+
+            foreach (var e in toRemovePending)
+            {
+                _trackedEntities.Remove(e);
+            }
+
+            var toRemoveOriginal = _originalValues.Keys
+                .Where(e => e.GetType() == mapping.EntityType && Equals(getter(e), keyValue))
+                .ToList();
+
+            foreach (var e in toRemoveOriginal)
+            {
+                _originalValues.Remove(e);
+            }
         }
 
         /// <summary>
         /// Detects modified entities by comparing current values against original snapshots.
         /// Returns tracked entities with state=Update, including ChangedProperties for dirty update.
+        /// Skips entities already marked for Delete or Insert.
         /// </summary>
         public List<TrackedEntity> DetectChanges(EntityMapping mapping)
         {
@@ -112,6 +187,11 @@ namespace ZeroData.Sql.ChangeTracking
                 var originalSnapshot = kvp.Value;
 
                 if (entity.GetType() != mapping.EntityType)
+                    continue;
+
+                // Do not detect updates for entities that are already pending deletion or insertion
+                var existing = _trackedEntities.FirstOrDefault(e => ReferenceEquals(e.Entity, entity));
+                if (existing != null && (existing.State == EntityState.Delete || existing.State == EntityState.Insert))
                     continue;
 
                 var changedProps = new List<string>();
@@ -131,10 +211,18 @@ namespace ZeroData.Sql.ChangeTracking
 
                 if (changedProps.Count > 0)
                 {
-                    updates.Add(new TrackedEntity(entity, mapping.EntityType, EntityState.Update)
+                    if (existing != null && existing.State == EntityState.Update)
                     {
-                        ChangedProperties = changedProps
-                    });
+                        if (existing.ChangedProperties == null || existing.ChangedProperties.Count == 0)
+                            existing.ChangedProperties = changedProps;
+                    }
+                    else
+                    {
+                        updates.Add(new TrackedEntity(entity, mapping.EntityType, EntityState.Update)
+                        {
+                            ChangedProperties = changedProps
+                        });
+                    }
                 }
             }
 
@@ -154,12 +242,51 @@ namespace ZeroData.Sql.ChangeTracking
         }
 
         /// <summary>
-        /// Clears all tracked changes and snapshots after a successful SubmitChanges.
+        /// Clears all tracked changes and refreshes snapshots after a successful SubmitChanges.
+        /// Inserted entities become tracked with their new values.
+        /// Updated entities refresh their baseline snapshots.
+        /// Deleted entities are removed from tracking.
         /// </summary>
         public void AcceptChanges()
         {
+            var deletedEntities = new HashSet<object>(
+                _trackedEntities.Where(e => e.State == EntityState.Delete).Select(e => e.Entity),
+                ReferenceEqualityComparer.Instance);
+
+            var insertedEntities = _trackedEntities.Where(e => e.State == EntityState.Insert).ToList();
+
+            // Remove deleted entities from original values
+            foreach (var entity in deletedEntities)
+            {
+                _originalValues.Remove(entity);
+            }
+
+            // Refresh snapshots for remaining tracked original values
+            foreach (var kvp in _originalValues.ToList())
+            {
+                var entity = kvp.Key;
+                var snapshot = kvp.Value;
+                var mapping = MappingCache.GetMapping(entity.GetType());
+                if (mapping != null)
+                {
+                    foreach (var col in mapping.Columns)
+                    {
+                        snapshot[col.Property.Name] = GetCompiledGetter(col.Property)(entity);
+                    }
+                }
+            }
+
+            // Add newly inserted entities to original values baseline
+            foreach (var tracked in insertedEntities)
+            {
+                var mapping = MappingCache.GetMapping(tracked.EntityType);
+                if (mapping != null)
+                {
+                    TrackLoaded(tracked.Entity, mapping);
+                }
+            }
+
             _trackedEntities.Clear();
-            _originalValues.Clear();
         }
 
         /// <summary>
@@ -176,7 +303,18 @@ namespace ZeroData.Sql.ChangeTracking
         /// </summary>
         public void AddUpdates(IEnumerable<TrackedEntity> updates)
         {
-            _trackedEntities.AddRange(updates);
+            if (updates == null) return;
+            foreach (var update in updates)
+            {
+                var existing = _trackedEntities.FirstOrDefault(e => ReferenceEquals(e.Entity, update.Entity));
+                if (existing != null)
+                {
+                    if (existing.State == EntityState.Delete || existing.State == EntityState.Insert)
+                        continue;
+                    _trackedEntities.Remove(existing);
+                }
+                _trackedEntities.Add(update);
+            }
         }
 
         #region ChangeTracker API (Phase 12)

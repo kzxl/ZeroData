@@ -233,6 +233,11 @@ namespace ZeroData.Sql
         #region Modern ZeroData API Shortcuts
 
         /// <summary>
+        /// Gets the Table<T> for the specified entity type (modern alias for GetTable<T>).
+        /// </summary>
+        public Table<T> Set<T>() where T : class => GetTable<T>();
+
+        /// <summary>
         /// Inserts an entity into its corresponding table.
         /// Modern shortcut for GetTable<T>().Insert(entity).
         /// </summary>
@@ -271,14 +276,36 @@ namespace ZeroData.Sql
 
         /// <summary>
         /// Deletes an entity directly by its primary key without fetching it first.
+        /// Respects SoftDeleteAttribute unless forceHardDelete is true.
         /// </summary>
-        public int DeleteById<T>(object id) where T : class => GetTable<T>().DeleteById(id);
+        public int DeleteById<T>(object id, bool forceHardDelete = false) where T : class
+            => GetTable<T>().DeleteById(id, forceHardDelete);
 
         /// <summary>
         /// Asynchronously deletes an entity directly by primary key without fetching it first.
+        /// Respects SoftDeleteAttribute unless forceHardDelete is true.
         /// </summary>
-        public Task<int> DeleteByIdAsync<T>(object id, CancellationToken ct = default) where T : class
-            => GetTable<T>().DeleteByIdAsync(id, ct);
+        public Task<int> DeleteByIdAsync<T>(object id, bool forceHardDelete = false, CancellationToken ct = default) where T : class
+            => GetTable<T>().DeleteByIdAsync(id, forceHardDelete, ct);
+
+        /// <summary>
+        /// Deletes all entities matching the specified predicate directly on the server without loading them into memory.
+        /// Respects SoftDeleteAttribute unless forceHardDelete is true.
+        /// </summary>
+        public int DeleteWhere<T>(System.Linq.Expressions.Expression<Func<T, bool>> predicate, bool forceHardDelete = false) where T : class
+            => GetTable<T>().DeleteWhere(predicate, forceHardDelete);
+
+        /// <summary>
+        /// Asynchronously deletes all entities matching the specified predicate directly on the server.
+        /// Respects SoftDeleteAttribute unless forceHardDelete is true.
+        /// </summary>
+        public Task<int> DeleteWhereAsync<T>(System.Linq.Expressions.Expression<Func<T, bool>> predicate, bool forceHardDelete = false, CancellationToken ct = default) where T : class
+            => GetTable<T>().DeleteWhereAsync(predicate, forceHardDelete, ct);
+
+        /// <summary>
+        /// Detaches an entity from change tracking.
+        /// </summary>
+        public void Detach<T>(T entity) where T : class => GetTable<T>().Detach(entity);
 
         /// <summary>
         /// Finds an entity quickly by primary key.
@@ -859,6 +886,8 @@ namespace ZeroData.Sql
             foreach (var tracked in changes)
             {
                 var mapping = MappingCache.GetMapping(tracked.EntityType);
+                Hooks.InvokeBeforeSave(tracked.Entity, tracked.EntityType, tracked.State);
+
                 switch (tracked.State)
                 {
                     case EntityState.Insert:
@@ -890,6 +919,8 @@ namespace ZeroData.Sql
                         await ExecuteCrudAsync(mapping, tracked.Entity, tx, (m, e) => SqlGenerator.GenerateDelete(m, e, _dialect), ct).ConfigureAwait(false);
                         break;
                 }
+
+                Hooks.InvokeAfterSave(tracked.Entity, tracked.EntityType, tracked.State);
             }
         }
 
