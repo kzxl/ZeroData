@@ -14,6 +14,7 @@ namespace ZeroData.Sql.Execution
     /// High-performance entity materializer that transforms IDataReader rows into C# objects.
     /// Uses cached Expression Tree compiled delegates for near-native execution speed.
     /// Thread-safe and resilient against schema differences across queries.
+    /// Integrated with ZeroPrimitives.FastConvert for zero-allocation register unboxing.
     /// </summary>
     public static class EntityMaterializer
     {
@@ -145,12 +146,11 @@ namespace ZeroData.Sql.Execution
                 }
 
                 var properties = targetType.GetProperties(BindingFlags.Public | BindingFlags.Instance)
-                    .Where(p => p.CanWrite)
+                    .Where(p => p.CanWrite && p.GetIndexParameters().Length == 0)
                     .ToList();
 
                 var isDbNullMethod = typeof(IDataRecord).GetMethod(nameof(IDataRecord.IsDBNull), new[] { typeof(int) });
                 var getValueMethod = typeof(IDataRecord).GetMethod(nameof(IDataRecord.GetValue), new[] { typeof(int) });
-                var changeTypeMethod = typeof(FastConvert).GetMethod(nameof(FastConvert.ChangeType), new[] { typeof(object), typeof(Type) });
                 var convertFromDbMethod = typeof(ValueConverterCollection).GetMethod(nameof(ValueConverterCollection.ConvertFromDb), new[] { typeof(object), typeof(Type) });
                 var hasConverterMethod = typeof(ValueConverterCollection).GetMethod(nameof(ValueConverterCollection.HasConverter), new[] { typeof(Type) });
 
@@ -179,23 +179,26 @@ namespace ZeroData.Sql.Execution
                         continue;
 
                     var indexConst = Expression.Constant(i);
-                    var propTypeConst = Expression.Constant(matchedProp.PropertyType);
+                    var propType = matchedProp.PropertyType;
+                    var propTypeConst = Expression.Constant(propType);
 
                     var isDbNullExpr = Expression.Call(readerParam, isDbNullMethod, indexConst);
                     var rawValExpr = Expression.Call(readerParam, getValueMethod, indexConst);
+
+                    var directConvertExpr = BuildDirectConvertExpression(rawValExpr, propType);
 
                     var hasConverterCheck = Expression.AndAlso(
                         Expression.NotEqual(convertersParam, Expression.Constant(null, typeof(ValueConverterCollection))),
                         Expression.Call(convertersParam, hasConverterMethod, propTypeConst)
                     );
 
-                    var convertWithConverter = Expression.Call(convertersParam, convertFromDbMethod, rawValExpr, propTypeConst);
-                    var convertWithFastConvert = Expression.Call(changeTypeMethod, rawValExpr, propTypeConst);
+                    var convertWithConverter = Expression.Convert(
+                        Expression.Call(convertersParam, convertFromDbMethod, rawValExpr, propTypeConst),
+                        propType);
 
-                    var resolvedObjectExpr = Expression.Condition(hasConverterCheck, convertWithConverter, convertWithFastConvert);
-                    var castValueExpr = Expression.Convert(resolvedObjectExpr, matchedProp.PropertyType);
+                    var resolvedValueExpr = Expression.Condition(hasConverterCheck, convertWithConverter, directConvertExpr);
 
-                    var assignPropExpr = Expression.Assign(Expression.Property(instanceVar, matchedProp), castValueExpr);
+                    var assignPropExpr = Expression.Assign(Expression.Property(instanceVar, matchedProp), resolvedValueExpr);
                     var conditionExpr = Expression.IfThen(Expression.Not(isDbNullExpr), assignPropExpr);
 
                     expressions.Add(conditionExpr);
@@ -213,13 +216,71 @@ namespace ZeroData.Sql.Execution
             }
         }
 
+        private static Expression BuildDirectConvertExpression(Expression rawValExpr, Type targetType)
+        {
+            if (targetType == typeof(string))
+            {
+                var toStringMethod = typeof(object).GetMethod(nameof(object.ToString), Type.EmptyTypes);
+                return Expression.Condition(
+                    Expression.TypeIs(rawValExpr, typeof(string)),
+                    Expression.Convert(rawValExpr, typeof(string)),
+                    Expression.Call(rawValExpr, toStringMethod));
+            }
+
+            if (targetType == typeof(int))
+                return Expression.Call(typeof(ZeroPrimitives.FastConvert).GetMethod(nameof(ZeroPrimitives.FastConvert.AsInt), new[] { typeof(object), typeof(int) }), rawValExpr, Expression.Constant(0));
+
+            if (targetType == typeof(int?))
+                return Expression.Call(typeof(ZeroPrimitives.FastConvert).GetMethod(nameof(ZeroPrimitives.FastConvert.AsNullableInt), new[] { typeof(object), typeof(int?) }), rawValExpr, Expression.Constant(null, typeof(int?)));
+
+            if (targetType == typeof(long))
+                return Expression.Call(typeof(ZeroPrimitives.FastConvert).GetMethod(nameof(ZeroPrimitives.FastConvert.AsLong), new[] { typeof(object), typeof(long) }), rawValExpr, Expression.Constant(0L));
+
+            if (targetType == typeof(long?))
+                return Expression.Call(typeof(ZeroPrimitives.FastConvert).GetMethod(nameof(ZeroPrimitives.FastConvert.AsNullableLong), new[] { typeof(object), typeof(long?) }), rawValExpr, Expression.Constant(null, typeof(long?)));
+
+            if (targetType == typeof(decimal))
+                return Expression.Call(typeof(ZeroPrimitives.FastConvert).GetMethod(nameof(ZeroPrimitives.FastConvert.AsDecimal), new[] { typeof(object), typeof(decimal) }), rawValExpr, Expression.Constant(0m));
+
+            if (targetType == typeof(decimal?))
+                return Expression.Call(typeof(ZeroPrimitives.FastConvert).GetMethod(nameof(ZeroPrimitives.FastConvert.AsNullableDecimal), new[] { typeof(object), typeof(decimal?) }), rawValExpr, Expression.Constant(null, typeof(decimal?)));
+
+            if (targetType == typeof(double))
+                return Expression.Call(typeof(ZeroPrimitives.FastConvert).GetMethod(nameof(ZeroPrimitives.FastConvert.AsDouble), new[] { typeof(object), typeof(double) }), rawValExpr, Expression.Constant(0.0));
+
+            if (targetType == typeof(double?))
+                return Expression.Call(typeof(ZeroPrimitives.FastConvert).GetMethod(nameof(ZeroPrimitives.FastConvert.AsNullableDouble), new[] { typeof(object), typeof(double?) }), rawValExpr, Expression.Constant(null, typeof(double?)));
+
+            if (targetType == typeof(bool))
+                return Expression.Call(typeof(ZeroPrimitives.FastConvert).GetMethod(nameof(ZeroPrimitives.FastConvert.AsBool), new[] { typeof(object), typeof(bool) }), rawValExpr, Expression.Constant(false));
+
+            if (targetType == typeof(bool?))
+                return Expression.Call(typeof(ZeroPrimitives.FastConvert).GetMethod(nameof(ZeroPrimitives.FastConvert.AsNullableBool), new[] { typeof(object), typeof(bool?) }), rawValExpr, Expression.Constant(null, typeof(bool?)));
+
+            if (targetType == typeof(DateTime))
+                return Expression.Call(typeof(ZeroPrimitives.FastConvert).GetMethod(nameof(ZeroPrimitives.FastConvert.AsDateTime), new[] { typeof(object), typeof(DateTime) }), rawValExpr, Expression.Constant(default(DateTime)));
+
+            if (targetType == typeof(DateTime?))
+                return Expression.Call(typeof(ZeroPrimitives.FastConvert).GetMethod(nameof(ZeroPrimitives.FastConvert.AsNullableDateTime), new[] { typeof(object), typeof(DateTime?) }), rawValExpr, Expression.Constant(null, typeof(DateTime?)));
+
+            if (targetType == typeof(Guid))
+                return Expression.Call(typeof(ZeroPrimitives.FastConvert).GetMethod(nameof(ZeroPrimitives.FastConvert.AsGuid), new[] { typeof(object), typeof(Guid) }), rawValExpr, Expression.Constant(default(Guid)));
+
+            if (targetType == typeof(Guid?))
+                return Expression.Call(typeof(ZeroPrimitives.FastConvert).GetMethod(nameof(ZeroPrimitives.FastConvert.AsNullableGuid), new[] { typeof(object), typeof(Guid?) }), rawValExpr, Expression.Constant(null, typeof(Guid?)));
+
+            // Universal fallback to generic ZeroPrimitives.FastConvert.To<T>
+            var toGenericMethod = typeof(ZeroPrimitives.FastConvert).GetMethod(nameof(ZeroPrimitives.FastConvert.To), new[] { typeof(object) });
+            return Expression.Call(toGenericMethod.MakeGenericMethod(targetType), rawValExpr);
+        }
+
         private static Func<IDataReader, ValueConverterCollection, object> BuildFallbackMaterializer(Type targetType, IDataReader reader)
         {
             EntityMapping mapping = null;
             try { mapping = MappingCache.GetMapping(targetType); } catch { }
 
             var properties = targetType.GetProperties(BindingFlags.Public | BindingFlags.Instance)
-                .Where(p => p.CanWrite)
+                .Where(p => p.CanWrite && p.GetIndexParameters().Length == 0)
                 .ToList();
 
             var bindings = new List<(int Ordinal, PropertyInfo Prop)>();
