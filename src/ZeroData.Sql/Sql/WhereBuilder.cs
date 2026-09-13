@@ -114,6 +114,13 @@ namespace ZeroData.Sql.Sql
                     : $"{nullMemberSql} IS NOT NULL";
             }
 
+            if (binary.NodeType == ExpressionType.Coalesce)
+            {
+                var left = Visit(binary.Left);
+                var right = Visit(binary.Right);
+                return $"COALESCE({left}, {right})";
+            }
+
             if (binary.NodeType == ExpressionType.AndAlso || binary.NodeType == ExpressionType.OrElse)
             {
                 var left = VisitCondition(binary.Left);
@@ -212,6 +219,21 @@ namespace ZeroData.Sql.Sql
             {
                 var inner = Visit(member.Expression);
                 return IsSqlServer() ? $"LEN({inner})" : $"LENGTH({inner})";
+            }
+
+            // DateTime member access: Year, Month, Day, Date
+            if ((member.Member.DeclaringType == typeof(DateTime) || member.Expression?.Type == typeof(DateTime)) &&
+                ContainsEntityParameter(member.Expression))
+            {
+                switch (member.Member.Name)
+                {
+                    case "Year":
+                    case "Month":
+                    case "Day":
+                    case "Date":
+                        var inner = Visit(member.Expression);
+                        return TranslateDateTimeMember(member.Member.Name, inner);
+                }
             }
 
             // Otherwise, evaluate the expression to get its value
@@ -347,6 +369,28 @@ namespace ZeroData.Sql.Sql
                 return $"{column} IN ({string.Join(", ", paramNames)})";
             }
 
+            // Math static methods: Abs, Round, Floor, Ceiling
+            if (method.Method.DeclaringType == typeof(Math) && ContainsEntityParameter(method))
+            {
+                switch (method.Method.Name)
+                {
+                    case "Abs" when method.Arguments.Count == 1:
+                        return $"ABS({Visit(method.Arguments[0])})";
+
+                    case "Round" when method.Arguments.Count == 1:
+                        return $"ROUND({Visit(method.Arguments[0])})";
+
+                    case "Round" when method.Arguments.Count == 2:
+                        return $"ROUND({Visit(method.Arguments[0])}, {Visit(method.Arguments[1])})";
+
+                    case "Floor" when method.Arguments.Count == 1:
+                        return $"FLOOR({Visit(method.Arguments[0])})";
+
+                    case "Ceiling" when method.Arguments.Count == 1:
+                        return $"CEILING({Visit(method.Arguments[0])})";
+                }
+            }
+
             throw new NotSupportedException(
                 $"Method '{method.Method.Name}' is not supported in WHERE clause.");
         }
@@ -418,6 +462,65 @@ namespace ZeroData.Sql.Sql
         private bool IsPostgreSql()
         {
             return _dialect is PostgreSqlDialect || string.Equals(_dialect?.ProviderName, "PostgreSQL", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool IsMySql()
+        {
+            return _dialect is MySqlDialect ||
+                   string.Equals(_dialect?.ProviderName, "MySQL", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(_dialect?.ProviderName, "MySql", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool IsSqlite()
+        {
+            return _dialect is SqliteDialect ||
+                   string.Equals(_dialect?.ProviderName, "SQLite", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private string TranslateDateTimeMember(string memberName, string inner)
+        {
+            if (IsSqlServer())
+            {
+                switch (memberName)
+                {
+                    case "Year": return $"YEAR({inner})";
+                    case "Month": return $"MONTH({inner})";
+                    case "Day": return $"DAY({inner})";
+                    case "Date": return $"CAST({inner} AS DATE)";
+                }
+            }
+            else if (IsPostgreSql())
+            {
+                switch (memberName)
+                {
+                    case "Year": return $"EXTRACT(YEAR FROM {inner})";
+                    case "Month": return $"EXTRACT(MONTH FROM {inner})";
+                    case "Day": return $"EXTRACT(DAY FROM {inner})";
+                    case "Date": return $"CAST({inner} AS DATE)";
+                }
+            }
+            else if (IsMySql())
+            {
+                switch (memberName)
+                {
+                    case "Year": return $"YEAR({inner})";
+                    case "Month": return $"MONTH({inner})";
+                    case "Day": return $"DAY({inner})";
+                    case "Date": return $"DATE({inner})";
+                }
+            }
+            else // SQLite or default
+            {
+                switch (memberName)
+                {
+                    case "Year": return $"CAST(strftime('%Y', {inner}) AS INTEGER)";
+                    case "Month": return $"CAST(strftime('%m', {inner}) AS INTEGER)";
+                    case "Day": return $"CAST(strftime('%d', {inner}) AS INTEGER)";
+                    case "Date": return $"date({inner})";
+                }
+            }
+
+            throw new NotSupportedException($"DateTime member '{memberName}' is not supported.");
         }
 
         private bool IsNullComparison(BinaryExpression binary, out string memberSql, out bool isNull)
