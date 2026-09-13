@@ -468,6 +468,68 @@ namespace ZeroData.Sql
             => FromSqlAsync<T>(sql, parameters, ct);
 
         /// <summary>
+        /// Constant-time single-column Keyset (Seek) pagination.
+        /// </summary>
+        public List<T> Seek<T, TKey>(Expression<Func<T, TKey>> keySelector, TKey lastSeenKey, int pageSize, bool ascending = true) where T : class
+            => GetTable<T>().Seek(keySelector, lastSeenKey, pageSize, ascending);
+
+        /// <summary>
+        /// Asynchronously executes constant-time single-column Keyset (Seek) pagination.
+        /// </summary>
+        public Task<List<T>> SeekAsync<T, TKey>(Expression<Func<T, TKey>> keySelector, TKey lastSeenKey, int pageSize, bool ascending = true, CancellationToken ct = default) where T : class
+            => GetTable<T>().SeekAsync(keySelector, lastSeenKey, pageSize, ascending, ct);
+
+        /// <summary>
+        /// Two-column composite keyset (seek) pagination.
+        /// </summary>
+        public List<T> Seek<T, TKey1, TKey2>(
+            Expression<Func<T, TKey1>> key1, TKey1 lastSeen1, bool asc1,
+            Expression<Func<T, TKey2>> key2, TKey2 lastSeen2, bool asc2,
+            int pageSize) where T : class
+            => GetTable<T>().Seek(key1, lastSeen1, asc1, key2, lastSeen2, asc2, pageSize);
+
+        /// <summary>
+        /// Asynchronously executes two-column composite keyset (seek) pagination.
+        /// </summary>
+        public Task<List<T>> SeekAsync<T, TKey1, TKey2>(
+            Expression<Func<T, TKey1>> key1, TKey1 lastSeen1, bool asc1,
+            Expression<Func<T, TKey2>> key2, TKey2 lastSeen2, bool asc2,
+            int pageSize, CancellationToken ct = default) where T : class
+            => GetTable<T>().SeekAsync(key1, lastSeen1, asc1, key2, lastSeen2, asc2, pageSize, ct);
+
+        /// <summary>
+        /// Three-column composite keyset (seek) pagination.
+        /// </summary>
+        public List<T> Seek<T, TKey1, TKey2, TKey3>(
+            Expression<Func<T, TKey1>> key1, TKey1 lastSeen1, bool asc1,
+            Expression<Func<T, TKey2>> key2, TKey2 lastSeen2, bool asc2,
+            Expression<Func<T, TKey3>> key3, TKey3 lastSeen3, bool asc3,
+            int pageSize) where T : class
+            => GetTable<T>().Seek(key1, lastSeen1, asc1, key2, lastSeen2, asc2, key3, lastSeen3, asc3, pageSize);
+
+        /// <summary>
+        /// Asynchronously executes three-column composite keyset (seek) pagination.
+        /// </summary>
+        public Task<List<T>> SeekAsync<T, TKey1, TKey2, TKey3>(
+            Expression<Func<T, TKey1>> key1, TKey1 lastSeen1, bool asc1,
+            Expression<Func<T, TKey2>> key2, TKey2 lastSeen2, bool asc2,
+            Expression<Func<T, TKey3>> key3, TKey3 lastSeen3, bool asc3,
+            int pageSize, CancellationToken ct = default) where T : class
+            => GetTable<T>().SeekAsync(key1, lastSeen1, asc1, key2, lastSeen2, asc2, key3, lastSeen3, asc3, pageSize, ct);
+
+        /// <summary>
+        /// Composite keyset (seek) pagination across multiple indexed columns.
+        /// </summary>
+        public List<T> Seek<T>(IReadOnlyList<SeekColumn> seekColumns, int pageSize) where T : class
+            => GetTable<T>().Seek(seekColumns, pageSize);
+
+        /// <summary>
+        /// Asynchronously executes composite keyset (seek) pagination across multiple indexed columns.
+        /// </summary>
+        public Task<List<T>> SeekAsync<T>(IReadOnlyList<SeekColumn> seekColumns, int pageSize, CancellationToken ct = default) where T : class
+            => GetTable<T>().SeekAsync(seekColumns, pageSize, ct);
+
+        /// <summary>
         /// Executes a raw SQL command (UPDATE, INSERT, DELETE) with named parameters.
         /// </summary>
         public int ExecuteSql(string sql, object parameters = null)

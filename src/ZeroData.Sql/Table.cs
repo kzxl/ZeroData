@@ -1594,6 +1594,142 @@ namespace ZeroData.Sql
             return results;
         }
 
+        /// <summary>
+        /// Constant-time Composite Keyset (Seek) pagination across multiple indexed columns.
+        /// Bypasses OFFSET/FETCH for ultra-fast deep pagination.
+        /// </summary>
+        public List<T> Seek(IReadOnlyList<SeekColumn> seekColumns, int pageSize)
+        {
+            if (seekColumns == null || seekColumns.Count == 0)
+                throw new ArgumentException("At least one seek column must be specified.", nameof(seekColumns));
+            if (pageSize <= 0)
+                throw new ArgumentOutOfRangeException(nameof(pageSize), "Page size must be greater than zero.");
+
+            var (querySql, dp, mapping) = BuildCompositeSeekSql(seekColumns, pageSize);
+            _context.EnsureConnectionOpen();
+            var results = _context.Connection.Query<T>(querySql, dp,
+                transaction: _context.Transaction, commandTimeout: _context.CommandTimeout, converters: _context.Converters).ToList();
+
+            TrackResults(results, mapping);
+            LoadAssociations(results, mapping);
+            return results;
+        }
+
+        /// <summary>
+        /// Asynchronously executes constant-time Composite Keyset (Seek) pagination across multiple indexed columns.
+        /// </summary>
+        public async Task<List<T>> SeekAsync(IReadOnlyList<SeekColumn> seekColumns, int pageSize, CancellationToken ct = default)
+        {
+            if (seekColumns == null || seekColumns.Count == 0)
+                throw new ArgumentException("At least one seek column must be specified.", nameof(seekColumns));
+            if (pageSize <= 0)
+                throw new ArgumentOutOfRangeException(nameof(pageSize), "Page size must be greater than zero.");
+
+            var (querySql, dp, mapping) = BuildCompositeSeekSql(seekColumns, pageSize);
+            await _context.EnsureConnectionOpenAsync(ct).ConfigureAwait(false);
+            var results = (await _context.Connection.QueryAsync<T>(querySql, dp,
+                transaction: _context.Transaction, commandTimeout: _context.CommandTimeout, cancellationToken: ct, converters: _context.Converters).ConfigureAwait(false)).ToList();
+
+            TrackResults(results, mapping);
+            await LoadAssociationsAsync(results, mapping, ct).ConfigureAwait(false);
+            return results;
+        }
+
+        /// <summary>
+        /// Two-column composite keyset (seek) pagination.
+        /// </summary>
+        public List<T> Seek<TKey1, TKey2>(
+            Expression<Func<T, TKey1>> key1, TKey1 lastSeen1, bool asc1,
+            Expression<Func<T, TKey2>> key2, TKey2 lastSeen2, bool asc2,
+            int pageSize)
+            => Seek(new[] { SeekColumn.Create(key1, lastSeen1, asc1), SeekColumn.Create(key2, lastSeen2, asc2) }, pageSize);
+
+        /// <summary>
+        /// Asynchronously executes two-column composite keyset (seek) pagination.
+        /// </summary>
+        public Task<List<T>> SeekAsync<TKey1, TKey2>(
+            Expression<Func<T, TKey1>> key1, TKey1 lastSeen1, bool asc1,
+            Expression<Func<T, TKey2>> key2, TKey2 lastSeen2, bool asc2,
+            int pageSize, CancellationToken ct = default)
+            => SeekAsync(new[] { SeekColumn.Create(key1, lastSeen1, asc1), SeekColumn.Create(key2, lastSeen2, asc2) }, pageSize, ct);
+
+        /// <summary>
+        /// Three-column composite keyset (seek) pagination.
+        /// </summary>
+        public List<T> Seek<TKey1, TKey2, TKey3>(
+            Expression<Func<T, TKey1>> key1, TKey1 lastSeen1, bool asc1,
+            Expression<Func<T, TKey2>> key2, TKey2 lastSeen2, bool asc2,
+            Expression<Func<T, TKey3>> key3, TKey3 lastSeen3, bool asc3,
+            int pageSize)
+            => Seek(new[] { SeekColumn.Create(key1, lastSeen1, asc1), SeekColumn.Create(key2, lastSeen2, asc2), SeekColumn.Create(key3, lastSeen3, asc3) }, pageSize);
+
+        /// <summary>
+        /// Asynchronously executes three-column composite keyset (seek) pagination.
+        /// </summary>
+        public Task<List<T>> SeekAsync<TKey1, TKey2, TKey3>(
+            Expression<Func<T, TKey1>> key1, TKey1 lastSeen1, bool asc1,
+            Expression<Func<T, TKey2>> key2, TKey2 lastSeen2, bool asc2,
+            Expression<Func<T, TKey3>> key3, TKey3 lastSeen3, bool asc3,
+            int pageSize, CancellationToken ct = default)
+            => SeekAsync(new[] { SeekColumn.Create(key1, lastSeen1, asc1), SeekColumn.Create(key2, lastSeen2, asc2), SeekColumn.Create(key3, lastSeen3, asc3) }, pageSize, ct);
+
+        private (string QuerySql, DynamicParameters Parameters, EntityMapping Mapping) BuildCompositeSeekSql(
+            IReadOnlyList<SeekColumn> seekColumns, int pageSize)
+        {
+            var mapping = MappingCache.GetMapping<T>();
+            var dialect = _context.Dialect;
+
+            var (fullSql, dp) = BuildWhereSql(mapping, CombinePending(null), null, null, null, _rawWhereFragments);
+            ResetQueryState();
+
+            if (dp == null) dp = new DynamicParameters();
+
+            var orClauses = new List<string>();
+            for (int i = 0; i < seekColumns.Count; i++)
+            {
+                var andParts = new List<string>();
+                for (int j = 0; j < i; j++)
+                {
+                    var prevCol = seekColumns[j];
+                    var prevQuoted = dialect.QuoteIdentifier(prevCol.ColumnName);
+                    var prevParam = $"@cseek_eq_{j}_{i}";
+                    dp.Add(prevParam, prevCol.LastSeenValue);
+                    andParts.Add($"{prevQuoted} = {prevParam}");
+                }
+
+                var curCol = seekColumns[i];
+                var curQuoted = dialect.QuoteIdentifier(curCol.ColumnName);
+                var curOp = curCol.Ascending ? ">" : "<";
+                var curParam = $"@cseek_op_{i}";
+                dp.Add(curParam, curCol.LastSeenValue);
+                andParts.Add($"{curQuoted} {curOp} {curParam}");
+
+                orClauses.Add($"({string.Join(" AND ", andParts)})");
+            }
+
+            var seekCondition = string.Join(" OR ", orClauses);
+            var hasWhere = fullSql.IndexOf(" WHERE ", StringComparison.OrdinalIgnoreCase) >= 0;
+            var sqlWithSeek = hasWhere ? $"{fullSql} AND ({seekCondition})" : $"{fullSql} WHERE {seekCondition}";
+
+            var orderClauses = seekColumns.Select(c => $"{dialect.QuoteIdentifier(c.ColumnName)} {(c.Ascending ? "ASC" : "DESC")}").ToList();
+            var orderBySql = string.Join(", ", orderClauses);
+
+            var provider = dialect.ProviderName;
+            var usesLimit = provider == "SQLite" || provider == "MySQL" || provider == "PostgreSQL";
+
+            string querySql;
+            if (usesLimit)
+            {
+                querySql = $"{sqlWithSeek} ORDER BY {orderBySql} LIMIT {pageSize}";
+            }
+            else
+            {
+                querySql = $"{sqlWithSeek} ORDER BY {orderBySql} OFFSET 0 ROWS FETCH NEXT {pageSize} ROWS ONLY";
+            }
+
+            return (querySql, dp, mapping);
+        }
+
         #endregion
 
         #region IEnumerable
