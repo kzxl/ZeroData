@@ -1,4 +1,4 @@
-﻿using ZeroData.Sql.Dialects;
+using ZeroData.Sql.Dialects;
 using ZeroData.Sql.Mapping;
 using System;
 using System.Collections;
@@ -48,7 +48,7 @@ namespace ZeroData.Sql.Sql
             _parameters.Clear();
             _paramIndex = 0;
 
-            var sql = Visit(predicate.Body);
+            var sql = VisitCondition(predicate.Body);
             return (sql, _parameters);
         }
 
@@ -63,9 +63,20 @@ namespace ZeroData.Sql.Sql
             // Don't reset _paramIndex — allows multiple sequential calls to produce unique names
             _paramPrefix = "f";
 
-            var sql = Visit(predicate.Body);
+            var sql = VisitCondition(predicate.Body);
             _paramPrefix = "w"; // Reset for next use
             return (sql, _parameters.Count > 0 ? new Dictionary<string, object>(_parameters) : null);
+        }
+
+        private string VisitCondition(Expression expression)
+        {
+            if (IsEntityBooleanMember(expression))
+            {
+                var col = Visit(expression);
+                return IsPostgreSql() ? $"{col} = TRUE" : $"{col} = 1";
+            }
+
+            return Visit(expression);
         }
 
         private string Visit(Expression expression)
@@ -103,37 +114,46 @@ namespace ZeroData.Sql.Sql
                     : $"{nullMemberSql} IS NOT NULL";
             }
 
-            var left = Visit(binary.Left);
-            var right = Visit(binary.Right);
-
-            string op;
-            switch (binary.NodeType)
+            if (binary.NodeType == ExpressionType.AndAlso || binary.NodeType == ExpressionType.OrElse)
             {
-                case ExpressionType.Equal: op = "="; break;
-                case ExpressionType.NotEqual: op = "<>"; break;
-                case ExpressionType.LessThan: op = "<"; break;
-                case ExpressionType.LessThanOrEqual: op = "<="; break;
-                case ExpressionType.GreaterThan: op = ">"; break;
-                case ExpressionType.GreaterThanOrEqual: op = ">="; break;
-                case ExpressionType.AndAlso: op = "AND"; break;
-                case ExpressionType.OrElse: op = "OR"; break;
-                default:
-                    throw new NotSupportedException(
-                        $"Binary operator '{binary.NodeType}' is not supported.");
+                var left = VisitCondition(binary.Left);
+                var right = VisitCondition(binary.Right);
+                var op = binary.NodeType == ExpressionType.AndAlso ? "AND" : "OR";
+
+                // Wrap OR conditions in parentheses
+                if (binary.NodeType == ExpressionType.OrElse)
+                    return $"({left} {op} {right})";
+
+                return $"{left} {op} {right}";
             }
+            else
+            {
+                var left = Visit(binary.Left);
+                var right = Visit(binary.Right);
 
-            // Wrap OR conditions in parentheses
-            if (binary.NodeType == ExpressionType.OrElse)
-                return $"({left} {op} {right})";
+                string op;
+                switch (binary.NodeType)
+                {
+                    case ExpressionType.Equal: op = "="; break;
+                    case ExpressionType.NotEqual: op = "<>"; break;
+                    case ExpressionType.LessThan: op = "<"; break;
+                    case ExpressionType.LessThanOrEqual: op = "<="; break;
+                    case ExpressionType.GreaterThan: op = ">"; break;
+                    case ExpressionType.GreaterThanOrEqual: op = ">="; break;
+                    default:
+                        throw new NotSupportedException(
+                            $"Binary operator '{binary.NodeType}' is not supported.");
+                }
 
-            return $"{left} {op} {right}";
+                return $"{left} {op} {right}";
+            }
         }
 
         private string VisitUnary(UnaryExpression unary)
         {
             if (unary.NodeType == ExpressionType.Not)
             {
-                var operand = Visit(unary.Operand);
+                var operand = VisitCondition(unary.Operand);
                 return $"NOT ({operand})";
             }
 
@@ -149,7 +169,7 @@ namespace ZeroData.Sql.Sql
         private string VisitMember(MemberExpression member)
         {
             // Check if this is an entity property (e.g., p.Name)
-            if (member.Expression is ParameterExpression)
+            if (IsEntityMember(member, out _))
             {
                 var columnMapping = _mapping.Columns
                     .FirstOrDefault(c => c.Property.Name == member.Member.Name);
@@ -159,6 +179,13 @@ namespace ZeroData.Sql.Sql
 
                 // Fallback: use member name as column name
                 return _dialect.QuoteIdentifier(member.Member.Name);
+            }
+
+            // String .Length property translated to LEN / LENGTH
+            if (member.Member.Name == "Length" && member.Type == typeof(int) && ContainsEntityParameter(member.Expression))
+            {
+                var inner = Visit(member.Expression);
+                return IsSqlServer() ? $"LEN({inner})" : $"LENGTH({inner})";
             }
 
             // Otherwise, evaluate the expression to get its value
@@ -176,21 +203,71 @@ namespace ZeroData.Sql.Sql
 
         private string VisitMethodCall(MethodCallExpression method)
         {
-            // String methods: Contains, StartsWith, EndsWith
+            // Static string methods: string.IsNullOrEmpty, string.IsNullOrWhiteSpace
+            if (method.Method.DeclaringType == typeof(string))
+            {
+                if (method.Method.Name == "IsNullOrEmpty" && method.Arguments.Count == 1)
+                {
+                    var col = Visit(method.Arguments[0]);
+                    return $"({col} IS NULL OR {col} = '')";
+                }
+
+                if (method.Method.Name == "IsNullOrWhiteSpace" && method.Arguments.Count == 1)
+                {
+                    var col = Visit(method.Arguments[0]);
+                    return $"({col} IS NULL OR TRIM({col}) = '')";
+                }
+            }
+
+            // String instance methods: Contains, StartsWith, EndsWith, ToLower, ToUpper, Trim
             if (method.Object != null && method.Object.Type == typeof(string))
             {
-                var column = Visit(method.Object);
-                var arg = EvaluateExpression(method.Arguments[0]);
-                var escaped = EscapeLike(arg);
-
                 switch (method.Method.Name)
                 {
+                    case "ToLower":
+                        return $"LOWER({Visit(method.Object)})";
+
+                    case "ToUpper":
+                        return $"UPPER({Visit(method.Object)})";
+
+                    case "Trim":
+                        if (method.Arguments.Count == 0)
+                            return $"TRIM({Visit(method.Object)})";
+                        break;
+
+                    case "TrimStart":
+                        if (method.Arguments.Count == 0)
+                            return $"LTRIM({Visit(method.Object)})";
+                        break;
+
+                    case "TrimEnd":
+                        if (method.Arguments.Count == 0)
+                            return $"RTRIM({Visit(method.Object)})";
+                        break;
+
                     case "Contains":
+                    {
+                        var column = Visit(method.Object);
+                        var arg = EvaluateExpression(method.Arguments[0]);
+                        var escaped = EscapeLike(arg);
                         return $"{column} LIKE {AddParameter($"%{escaped}%")} ESCAPE '\\'";
+                    }
+
                     case "StartsWith":
+                    {
+                        var column = Visit(method.Object);
+                        var arg = EvaluateExpression(method.Arguments[0]);
+                        var escaped = EscapeLike(arg);
                         return $"{column} LIKE {AddParameter($"{escaped}%")} ESCAPE '\\'";
+                    }
+
                     case "EndsWith":
+                    {
+                        var column = Visit(method.Object);
+                        var arg = EvaluateExpression(method.Arguments[0]);
+                        var escaped = EscapeLike(arg);
                         return $"{column} LIKE {AddParameter($"%{escaped}")} ESCAPE '\\'";
+                    }
                 }
             }
 
@@ -236,6 +313,64 @@ namespace ZeroData.Sql.Sql
 
             throw new NotSupportedException(
                 $"Method '{method.Method.Name}' is not supported in WHERE clause.");
+        }
+
+        private bool IsEntityMember(Expression expr, out MemberExpression member)
+        {
+            if (expr is MemberExpression m && IsParameterReference(m.Expression))
+            {
+                member = m;
+                return true;
+            }
+            member = null;
+            return false;
+        }
+
+        private static bool IsParameterReference(Expression expr)
+        {
+            if (expr is ParameterExpression)
+                return true;
+            if (expr is UnaryExpression u && u.NodeType == ExpressionType.Convert)
+                return IsParameterReference(u.Operand);
+            return false;
+        }
+
+        private bool IsEntityBooleanMember(Expression expr)
+        {
+            if (IsEntityMember(expr, out var m))
+            {
+                var type = m.Type;
+                return type == typeof(bool) || type == typeof(bool?);
+            }
+            return false;
+        }
+
+        private static bool ContainsEntityParameter(Expression expr)
+        {
+            if (expr == null) return false;
+            if (expr is ParameterExpression) return true;
+            if (expr is MemberExpression m) return ContainsEntityParameter(m.Expression);
+            if (expr is MethodCallExpression call)
+            {
+                if (ContainsEntityParameter(call.Object)) return true;
+                foreach (var arg in call.Arguments)
+                {
+                    if (ContainsEntityParameter(arg)) return true;
+                }
+            }
+            if (expr is UnaryExpression u) return ContainsEntityParameter(u.Operand);
+            if (expr is BinaryExpression b) return ContainsEntityParameter(b.Left) || ContainsEntityParameter(b.Right);
+            return false;
+        }
+
+        private bool IsSqlServer()
+        {
+            return _dialect is SqlServerDialect || string.Equals(_dialect?.ProviderName, "SqlServer", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool IsPostgreSql()
+        {
+            return _dialect is PostgreSqlDialect || string.Equals(_dialect?.ProviderName, "PostgreSQL", StringComparison.OrdinalIgnoreCase);
         }
 
         private bool IsNullComparison(BinaryExpression binary, out string memberSql, out bool isNull)

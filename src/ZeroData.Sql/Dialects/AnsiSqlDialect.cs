@@ -1,72 +1,67 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 
 namespace ZeroData.Sql.Dialects
 {
     /// <summary>
-    /// SQL Server dialect implementation.
-    /// Supports SQL Server 2012+ (OFFSET/FETCH syntax).
+    /// Generic ANSI SQL:2008 dialect implementation.
+    /// Acts as a universal fallback for any standard relational database
+    /// (DuckDB, ClickHouse, DB2, Informix, ODBC, OLEDB, etc.)
     /// </summary>
-    public class SqlServerDialect : ISqlDialect
+    public class AnsiSqlDialect : ISqlDialect
     {
-        public string ProviderName => "SQL Server";
+        public string ProviderName => "ANSI SQL";
 
         public string ParameterPrefix => "@";
 
         public bool SupportsReturningClause => false;
 
-        public bool SupportsOutputClause => true;
+        public bool SupportsOutputClause => false;
+
+        public bool SupportsMultiRowValues => true;
 
         /// <summary>
-        /// SQL Server uses square brackets for identifiers: [TableName]
+        /// ANSI SQL standard double quotes for identifiers.
         /// </summary>
         public string QuoteIdentifier(string identifier)
         {
             if (string.IsNullOrEmpty(identifier))
                 throw new ArgumentNullException(nameof(identifier));
 
-            // Escape existing brackets
-            identifier = identifier.Replace("]", "]]");
-            return $"[{identifier}]";
+            identifier = identifier.Replace("\"", "\"\"");
+            return $"\"{identifier}\"";
         }
 
         /// <summary>
-        /// SQL Server 2012+ uses OFFSET/FETCH syntax
+        /// ANSI SQL standard OFFSET/FETCH syntax.
         /// </summary>
         public string GetLimitClause(int? skip, int? take)
         {
             if (!skip.HasValue && !take.HasValue)
                 return string.Empty;
 
-            // SQL Server requires ORDER BY before OFFSET/FETCH
             var clause = string.Empty;
 
             if (skip.HasValue && skip.Value > 0)
             {
                 clause = $"OFFSET {skip.Value} ROWS";
-
                 if (take.HasValue && take.Value > 0)
                     clause += $" FETCH NEXT {take.Value} ROWS ONLY";
             }
             else if (take.HasValue && take.Value > 0)
             {
-                // If only TAKE, use OFFSET 0
                 clause = $"OFFSET 0 ROWS FETCH NEXT {take.Value} ROWS ONLY";
             }
 
-            return clause;
+            return clause.Trim();
         }
 
-        /// <summary>
-        /// SQL Server uses SCOPE_IDENTITY() to get last inserted ID
-        /// </summary>
         public string GetLastInsertIdSql(string tableName, string columnName)
         {
-            return "SELECT CAST(SCOPE_IDENTITY() AS INT)";
+            return "SELECT @@IDENTITY";
         }
 
-        /// <summary>
-        /// SQL Server uses IDENTITY for auto-increment
-        /// </summary>
         public string GetAutoIncrementSql()
         {
             return "IDENTITY(1,1)";
@@ -79,26 +74,25 @@ namespace ZeroData.Sql.Dialects
 
         public string GetDbType(Type clrType)
         {
-            if (clrType == typeof(int)) return "INT";
+            if (clrType == typeof(int)) return "INTEGER";
             if (clrType == typeof(long)) return "BIGINT";
             if (clrType == typeof(short)) return "SMALLINT";
-            if (clrType == typeof(byte)) return "TINYINT";
-            if (clrType == typeof(bool)) return "BIT";
+            if (clrType == typeof(byte)) return "SMALLINT";
+            if (clrType == typeof(bool)) return "BOOLEAN";
             if (clrType == typeof(decimal)) return "DECIMAL(18,2)";
-            if (clrType == typeof(double)) return "FLOAT";
-            if (clrType == typeof(float)) return "REAL";
-            if (clrType == typeof(string)) return "NVARCHAR(MAX)";
-            if (clrType == typeof(DateTime)) return "DATETIME2";
-            if (clrType == typeof(DateTimeOffset)) return "DATETIMEOFFSET";
-            if (clrType == typeof(Guid)) return "UNIQUEIDENTIFIER";
-            if (clrType == typeof(byte[])) return "VARBINARY(MAX)";
+            if (clrType == typeof(double)) return "DOUBLE PRECISION";
+            if (clrType == typeof(float)) return "FLOAT";
+            if (clrType == typeof(string)) return "VARCHAR(4000)";
+            if (clrType == typeof(DateTime)) return "TIMESTAMP";
+            if (clrType == typeof(DateTimeOffset)) return "TIMESTAMP WITH TIME ZONE";
+            if (clrType == typeof(Guid)) return "VARCHAR(36)";
+            if (clrType == typeof(byte[])) return "BLOB";
 
-            // Handle nullable types
             var underlyingType = Nullable.GetUnderlyingType(clrType);
             if (underlyingType != null)
                 return GetDbType(underlyingType);
 
-            return "NVARCHAR(MAX)"; // Default fallback
+            return "VARCHAR(4000)";
         }
 
         public string EscapeStringValue(string value)
@@ -106,16 +100,13 @@ namespace ZeroData.Sql.Dialects
             if (value == null)
                 return "NULL";
 
-            // Escape single quotes by doubling them
             return value.Replace("'", "''");
         }
 
-        public bool SupportsMultiRowValues => true;
-
-        public string GenerateBulkInsertSql(string tableName, System.Collections.Generic.IReadOnlyList<string> columns, System.Collections.Generic.IReadOnlyList<System.Collections.Generic.IReadOnlyList<string>> parameterRows)
+        public string GenerateBulkInsertSql(string tableName, IReadOnlyList<string> columns, IReadOnlyList<IReadOnlyList<string>> parameterRows)
         {
             var cols = string.Join(", ", columns);
-            var rows = string.Join(", ", System.Linq.Enumerable.Select(parameterRows, r => $"({string.Join(", ", r)})"));
+            var rows = string.Join(", ", parameterRows.Select(r => $"({string.Join(", ", r)})"));
             return $"INSERT INTO {tableName} ({cols}) VALUES {rows}";
         }
     }

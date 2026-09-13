@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 
 namespace ZeroData.Sql.Dialects
 {
@@ -102,6 +102,15 @@ namespace ZeroData.Sql.Dialects
 
             // Escape single quotes by doubling them
             return value.Replace("'", "''");
+        }
+
+        public bool SupportsMultiRowValues => true;
+
+        public string GenerateBulkInsertSql(string tableName, System.Collections.Generic.IReadOnlyList<string> columns, System.Collections.Generic.IReadOnlyList<System.Collections.Generic.IReadOnlyList<string>> parameterRows)
+        {
+            var cols = string.Join(", ", columns);
+            var rows = string.Join(", ", System.Linq.Enumerable.Select(parameterRows, r => $"({string.Join(", ", r)})"));
+            return $"INSERT INTO {tableName} ({cols}) VALUES {rows}";
         }
     }
 }

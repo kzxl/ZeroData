@@ -72,24 +72,82 @@ namespace ZeroData.Sql
             _ownsConnection = false;
         }
 
-        public SqlContext(string connectionString)
+        public SqlContext(string connectionString) : this(connectionString, null, null)
+        {
+        }
+
+        public SqlContext(string connectionString, string providerName, ISqlDialect dialect = null)
         {
             if (string.IsNullOrWhiteSpace(connectionString))
                 throw new ArgumentNullException(nameof(connectionString));
 
-            Connection = ConnectionFactory?.Invoke(connectionString)
-                ?? throw new InvalidOperationException(
-                    "SqlContext.ConnectionFactory must be set before using the string constructor. " +
-                    "Example: SqlContext.ConnectionFactory = cs => new SqlConnection(cs);");
-            _dialect = SqlDialectFactory.GetDialect(Connection);
+            if (providerName != null && Providers.DbProviderRegistry.TryGetFactory(providerName, out var registeredFactory))
+            {
+                Connection = registeredFactory(connectionString);
+                _dialect = dialect ?? SqlDialectFactory.GetDialect(providerName);
+            }
+            else if (ConnectionFactory != null)
+            {
+                Connection = ConnectionFactory(connectionString);
+                _dialect = dialect ?? (providerName != null ? SqlDialectFactory.GetDialect(providerName) : SqlDialectFactory.GetDialect(Connection));
+            }
+            else
+            {
+                var targetProvider = providerName ?? Providers.DbProviderRegistry.DetectProvider(connectionString);
+                Connection = Providers.DbProviderRegistry.CreateConnection(connectionString, targetProvider);
+                _dialect = dialect ?? SqlDialectFactory.GetDialect(targetProvider);
+            }
+
             _ownsConnection = true;
         }
 
         #endregion
 
-        #region Static Configuration
+        #region Static Configuration & Multi-DB Factories
 
         public static Func<string, IDbConnection> ConnectionFactory { get; set; }
+
+        /// <summary>
+        /// Creates a new SqlContext instance using a connection string and optional provider name.
+        /// </summary>
+        public static SqlContext Create(string connectionString, string providerName = null, ISqlDialect dialect = null)
+            => new SqlContext(connectionString, providerName, dialect);
+
+        /// <summary>
+        /// Creates a new SqlContext configured for Microsoft SQL Server.
+        /// </summary>
+        public static SqlContext CreateSqlServer(string connectionString)
+            => new SqlContext(connectionString, "SqlServer", new Dialects.SqlServerDialect());
+
+        /// <summary>
+        /// Creates a new SqlContext configured for SQLite.
+        /// </summary>
+        public static SqlContext CreateSqlite(string connectionString)
+            => new SqlContext(connectionString, "Sqlite", new Dialects.SqliteDialect());
+
+        /// <summary>
+        /// Creates a new SqlContext configured for PostgreSQL.
+        /// </summary>
+        public static SqlContext CreatePostgreSql(string connectionString)
+            => new SqlContext(connectionString, "PostgreSql", new Dialects.PostgreSqlDialect());
+
+        /// <summary>
+        /// Creates a new SqlContext configured for MySQL / MariaDB.
+        /// </summary>
+        public static SqlContext CreateMySql(string connectionString)
+            => new SqlContext(connectionString, "MySql", new Dialects.MySqlDialect());
+
+        /// <summary>
+        /// Creates a new SqlContext configured for Oracle Database.
+        /// </summary>
+        public static SqlContext CreateOracle(string connectionString)
+            => new SqlContext(connectionString, "Oracle", new Dialects.OracleDialect());
+
+        /// <summary>
+        /// Creates a new SqlContext configured for Firebird Database.
+        /// </summary>
+        public static SqlContext CreateFirebird(string connectionString)
+            => new SqlContext(connectionString, "Firebird", new Dialects.FirebirdDialect());
 
         #endregion
 

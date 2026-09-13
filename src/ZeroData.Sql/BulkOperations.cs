@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
@@ -45,10 +45,12 @@ namespace ZeroData.Sql
             var rowsPerChunk = Math.Max(1, MaxParametersPerCommand / insertColumns.Count);
             int affected = 0;
 
+            var quotedCols = insertColumns.Select(c => d.QuoteIdentifier(c.ColumnName)).ToList();
+
             foreach (var chunk in Chunk(entityList, rowsPerChunk))
             {
                 var parameters = new DynamicParameters();
-                var valuesClauses = new List<string>();
+                var parameterRows = new List<IReadOnlyList<string>>();
                 for (int i = 0; i < chunk.Count; i++)
                 {
                     var paramNames = new List<string>();
@@ -58,10 +60,10 @@ namespace ZeroData.Sql
                         parameters.Add(paramName, col.Property.GetValue(chunk[i]));
                         paramNames.Add(paramName);
                     }
-                    valuesClauses.Add($"({string.Join(", ", paramNames)})");
+                    parameterRows.Add(paramNames);
                 }
 
-                var sql = $"INSERT INTO {table} ({columnNames}) VALUES {string.Join(", ", valuesClauses)}";
+                var sql = d.GenerateBulkInsertSql(table, quotedCols, parameterRows);
                 affected += connection.Execute(sql, parameters, transaction);
             }
 

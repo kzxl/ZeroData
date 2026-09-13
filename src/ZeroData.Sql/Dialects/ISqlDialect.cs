@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 
 namespace ZeroData.Sql.Dialects
 {
@@ -74,5 +74,16 @@ namespace ZeroData.Sql.Dialects
         /// Escapes a string value for SQL (prevents SQL injection in dynamic SQL).
         /// </summary>
         string EscapeStringValue(string value);
+
+        /// <summary>
+        /// Indicates whether the dialect supports VALUES (...), (...) multi-row INSERT syntax.
+        /// SQL Server, PostgreSQL, MySQL, SQLite, Firebird: true. Oracle: false (uses INSERT ALL).
+        /// </summary>
+        bool SupportsMultiRowValues { get; }
+
+        /// <summary>
+        /// Generates a bulk insert SQL statement for the dialect.
+        /// </summary>
+        string GenerateBulkInsertSql(string tableName, System.Collections.Generic.IReadOnlyList<string> columns, System.Collections.Generic.IReadOnlyList<System.Collections.Generic.IReadOnlyList<string>> parameterRows);
     }
 }

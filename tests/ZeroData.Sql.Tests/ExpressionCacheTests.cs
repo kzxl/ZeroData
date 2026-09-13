@@ -6,6 +6,12 @@ using Xunit;
 
 namespace ZeroData.Sql.Tests
 {
+    [CollectionDefinition("ExpressionCache", DisableParallelization = true)]
+    public class ExpressionCacheCollection
+    {
+    }
+
+    [Collection("ExpressionCache")]
     public class ExpressionCacheTests
     {
         public ExpressionCacheTests()
