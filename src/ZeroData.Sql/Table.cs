@@ -377,6 +377,36 @@ namespace ZeroData.Sql
         }
 
         /// <summary>
+        /// Bulk inserts entities bypassing change tracking, using SqlBulkCopy (SQL Server) or multi-row INSERT with compiled getters.
+        /// </summary>
+        public int BulkInsert(IEnumerable<T> entities) => _context.BulkInsert(entities);
+
+        /// <summary>
+        /// Asynchronously bulk inserts entities bypassing change tracking, using SqlBulkCopy (SQL Server) or multi-row INSERT with compiled getters.
+        /// </summary>
+        public Task<int> BulkInsertAsync(IEnumerable<T> entities, CancellationToken ct = default) => _context.BulkInsertAsync(entities, ct);
+
+        /// <summary>
+        /// Bulk updates entities by primary key bypassing change tracking.
+        /// </summary>
+        public int BulkUpdate(IEnumerable<T> entities) => _context.BulkUpdate(entities);
+
+        /// <summary>
+        /// Asynchronously bulk updates entities by primary key bypassing change tracking.
+        /// </summary>
+        public Task<int> BulkUpdateAsync(IEnumerable<T> entities, CancellationToken ct = default) => _context.BulkUpdateAsync(entities, ct);
+
+        /// <summary>
+        /// Bulk deletes entities by primary key bypassing change tracking.
+        /// </summary>
+        public int BulkDelete(IEnumerable<T> entities) => _context.BulkDelete(entities);
+
+        /// <summary>
+        /// Asynchronously bulk deletes entities by primary key bypassing change tracking.
+        /// </summary>
+        public Task<int> BulkDeleteAsync(IEnumerable<T> entities, CancellationToken ct = default) => _context.BulkDeleteAsync(entities, ct);
+
+        /// <summary>
         /// Attaches an entity for update tracking.
         /// </summary>
         public void Attach(T entity)
@@ -1177,7 +1207,7 @@ namespace ZeroData.Sql
         /// </summary>
         public async Task<bool> AnyAsync(CancellationToken ct = default)
         {
-            return await CountAsync(x => true, ct).ConfigureAwait(false) > 0;
+            return await CountAsync(ct).ConfigureAwait(false) > 0;
         }
 
         /// <summary>

@@ -478,6 +478,36 @@ namespace ZeroData.Sql
         public int BulkDelete<T>(IEnumerable<T> entities) where T : class
             => BulkOperations.BulkDelete(Connection, entities, Transaction, Dialect);
 
+        /// <summary>
+        /// Asynchronously bulk inserts entities using SqlBulkCopy (SQL Server) or batched multi-row INSERT with compiled getters.
+        /// </summary>
+        public async Task<int> BulkInsertAsync<T>(IEnumerable<T> entities, CancellationToken ct = default) where T : class
+        {
+            ThrowIfDisposed();
+            await EnsureConnectionOpenAsync(ct).ConfigureAwait(false);
+            return await BulkOperations.BulkInsertAsync(Connection, entities, Transaction, Dialect, ct).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Asynchronously bulk updates entities using batched UPDATE statements.
+        /// </summary>
+        public async Task<int> BulkUpdateAsync<T>(IEnumerable<T> entities, CancellationToken ct = default) where T : class
+        {
+            ThrowIfDisposed();
+            await EnsureConnectionOpenAsync(ct).ConfigureAwait(false);
+            return await BulkOperations.BulkUpdateAsync(Connection, entities, Transaction, Dialect, ct).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Asynchronously bulk deletes entities using batched DELETE statements.
+        /// </summary>
+        public async Task<int> BulkDeleteAsync<T>(IEnumerable<T> entities, CancellationToken ct = default) where T : class
+        {
+            ThrowIfDisposed();
+            await EnsureConnectionOpenAsync(ct).ConfigureAwait(false);
+            return await BulkOperations.BulkDeleteAsync(Connection, entities, Transaction, Dialect, ct).ConfigureAwait(false);
+        }
+
         #endregion
 
         #region Transaction Helpers (Phase 9)
@@ -580,104 +610,30 @@ namespace ZeroData.Sql
 
         #endregion
 
-        #region BulkInsert (Phase 8.1)
+        #region BulkInsert (Phase 8.1 - Delegated to BulkOperations)
 
         /// <summary>
-        /// Inserts multiple entities directly using batched INSERT VALUES.
-        /// Does not go through ChangeTracker or SubmitChanges.
-        /// Bypasses identity retrieval for maximum throughput.
+        /// Inserts multiple entities directly using high-speed bulk insertion.
         /// </summary>
-        public void BulkInsert<T>(IEnumerable<T> entities, int batchSize = 500) where T : class
+        public void BulkInsert<T>(IEnumerable<T> entities, int batchSize) where T : class
         {
-            if (entities == null) throw new ArgumentNullException(nameof(entities));
             ThrowIfDisposed();
             EnsureConnectionOpen();
-
-            var mapping = MappingCache.GetMapping<T>();
-            var columns = mapping.InsertableColumns;
-            var columnNames = string.Join(", ", columns.Select(c => _dialect.QuoteIdentifier(c.ColumnName)));
-            var tableName = SqlGenerator.QuoteTableName(mapping.TableName, _dialect);
-
-            var ownTx = Transaction == null;
-            var tx = Transaction ?? Connection.BeginTransaction();
-            try
-            {
-                foreach (var batch in Batch(entities, batchSize))
-                {
-                    var dp = new DynamicParameters();
-                    var valueRows = new List<string>();
-                    int idx = 0;
-                    foreach (var entity in batch)
-                    {
-                        var paramNames = new List<string>();
-                        foreach (var col in columns)
-                        {
-                            var paramName = $"@b{idx}_{col.ColumnName}";
-                            paramNames.Add(paramName);
-                            dp.Add(paramName, col.Property.GetValue(entity));
-                        }
-                        valueRows.Add($"({string.Join(", ", paramNames)})");
-                        idx++;
-                    }
-
-                    var sql = $"INSERT INTO {tableName} ({columnNames}) VALUES {string.Join(", ", valueRows)}";
-                    LogSql(sql, null);
-                    Connection.Execute(sql, (object)dp, transaction: tx, commandTimeout: CommandTimeout);
-                }
-                if (ownTx) tx.Commit();
-            }
-            catch { if (ownTx) tx.Rollback(); throw; }
-            finally { if (ownTx) tx.Dispose(); }
+            BulkOperations.BulkInsert(Connection, entities, Transaction, _dialect);
         }
 
         /// <summary>
-        /// Async version of BulkInsert.
+        /// Asynchronously inserts multiple entities using high-speed bulk insertion.
         /// </summary>
-        public async Task BulkInsertAsync<T>(IEnumerable<T> entities, int batchSize = 500,
+        public async Task BulkInsertAsync<T>(IEnumerable<T> entities, int batchSize,
             CancellationToken ct = default) where T : class
         {
-            if (entities == null) throw new ArgumentNullException(nameof(entities));
             ThrowIfDisposed();
             await EnsureConnectionOpenAsync(ct).ConfigureAwait(false);
-
-            var mapping = MappingCache.GetMapping<T>();
-            var columns = mapping.InsertableColumns;
-            var columnNames = string.Join(", ", columns.Select(c => _dialect.QuoteIdentifier(c.ColumnName)));
-            var tableName = SqlGenerator.QuoteTableName(mapping.TableName, _dialect);
-
-            var ownTx = Transaction == null;
-            var tx = Transaction ?? Connection.BeginTransaction();
-            try
-            {
-                foreach (var batch in Batch(entities, batchSize))
-                {
-                    var dp = new DynamicParameters();
-                    var valueRows = new List<string>();
-                    int idx = 0;
-                    foreach (var entity in batch)
-                    {
-                        var paramNames = new List<string>();
-                        foreach (var col in columns)
-                        {
-                            var paramName = $"@b{idx}_{col.ColumnName}";
-                            paramNames.Add(paramName);
-                            dp.Add(paramName, col.Property.GetValue(entity));
-                        }
-                        valueRows.Add($"({string.Join(", ", paramNames)})");
-                        idx++;
-                    }
-
-                    var sql = $"INSERT INTO {tableName} ({columnNames}) VALUES {string.Join(", ", valueRows)}";
-                    LogSql(sql, null);
-                    await Connection.ExecuteAsync(new CommandDefinition(
-                        sql, (object)dp, transaction: tx, commandTimeout: CommandTimeout,
-                        cancellationToken: ct)).ConfigureAwait(false);
-                }
-                if (ownTx) tx.Commit();
-            }
-            catch { if (ownTx) tx.Rollback(); throw; }
-            finally { if (ownTx) tx.Dispose(); }
+            await BulkOperations.BulkInsertAsync(Connection, entities, Transaction, _dialect, ct).ConfigureAwait(false);
         }
+
+        #endregion
 
         /// <summary>
         /// Inserts or updates an entity based on primary key existence.
@@ -726,8 +682,6 @@ namespace ZeroData.Sql
             }
             if (batch.Count > 0) yield return batch;
         }
-
-        #endregion
 
         #region Graph Insert (parent + child collections)
 

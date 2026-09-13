@@ -1,7 +1,8 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Reflection;
 
 namespace ZeroData.Sql.Mapping
@@ -20,6 +21,9 @@ namespace ZeroData.Sql.Mapping
 
         /// <summary>True if this column is a version/timestamp for optimistic concurrency.</summary>
         public bool IsVersion { get; set; }
+
+        /// <summary>Compiled expression delegate for reading the property value with zero reflection.</summary>
+        public Func<object, object> Getter { get; set; }
     }
 
     /// <summary>
@@ -164,6 +168,22 @@ namespace ZeroData.Sql.Mapping
                     var pkType = Nullable.GetUnderlyingType(pkCol.Property.PropertyType) ?? pkCol.Property.PropertyType;
                     if (pkType == typeof(int) || pkType == typeof(long) || pkType == typeof(short))
                         pkCol.IsDbGenerated = true;
+                }
+            }
+
+            foreach (var col in allColumns)
+            {
+                try
+                {
+                    var param = Expression.Parameter(typeof(object), "entity");
+                    var cast = Expression.Convert(param, type);
+                    var propAccess = Expression.Property(cast, col.Property);
+                    var box = Expression.Convert(propAccess, typeof(object));
+                    col.Getter = Expression.Lambda<Func<object, object>>(box, param).Compile();
+                }
+                catch
+                {
+                    col.Getter = obj => col.Property.GetValue(obj);
                 }
             }
 
