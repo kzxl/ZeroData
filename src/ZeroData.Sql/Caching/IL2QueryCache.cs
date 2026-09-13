@@ -29,10 +29,16 @@ namespace ZeroData.Sql.Caching
         /// Invalidates all cached query entries.
         /// </summary>
         void InvalidateAll();
+
+        /// <summary>
+        /// Gets the current number of cached entries.
+        /// </summary>
+        int Count { get; }
     }
 
     /// <summary>
-    /// In-memory thread-safe implementation of <see cref="IL2QueryCache"/> with sliding/absolute TTL and tag tracking.
+    /// In-memory thread-safe implementation of <see cref="IL2QueryCache"/> with sliding/absolute TTL,
+    /// bounded capacity, and tag tracking.
     /// </summary>
     public class MemoryL2QueryCache : IL2QueryCache
     {
@@ -42,6 +48,17 @@ namespace ZeroData.Sql.Caching
             public DateTime ExpiresAtUtc { get; set; }
             public List<Type> EntityTypes { get; set; }
         }
+
+        /// <summary>
+        /// Maximum number of cache entries to retain in memory before triggering eviction.
+        /// Default is 10,000 entries.
+        /// </summary>
+        public int MaxCapacity { get; set; } = 10000;
+
+        /// <summary>
+        /// Gets the current count of active cache entries.
+        /// </summary>
+        public int Count => _cache.Count;
 
         private readonly ConcurrentDictionary<string, CacheEntry> _cache
             = new ConcurrentDictionary<string, CacheEntry>(StringComparer.Ordinal);
@@ -67,8 +84,51 @@ namespace ZeroData.Sql.Caching
             return false;
         }
 
+        /// <summary>
+        /// Scans and purges all expired entries from memory.
+        /// Returns the number of purged entries.
+        /// </summary>
+        public int PruneExpired()
+        {
+            var now = DateTime.UtcNow;
+            int pruned = 0;
+            foreach (var kvp in _cache)
+            {
+                if (now >= kvp.Value.ExpiresAtUtc)
+                {
+                    if (_cache.TryRemove(kvp.Key, out _))
+                        pruned++;
+                }
+            }
+            return pruned;
+        }
+
         public void Set<T>(string key, T value, TimeSpan duration, IEnumerable<Type> impactedEntityTypes = null)
         {
+            if (_cache.Count >= MaxCapacity)
+            {
+                PruneExpired();
+
+                // If still exceeding or at capacity, evict earliest expiring entry
+                if (_cache.Count >= MaxCapacity)
+                {
+                    string oldestKey = null;
+                    DateTime earliest = DateTime.MaxValue;
+                    foreach (var kvp in _cache)
+                    {
+                        if (kvp.Value.ExpiresAtUtc < earliest)
+                        {
+                            earliest = kvp.Value.ExpiresAtUtc;
+                            oldestKey = kvp.Key;
+                        }
+                    }
+                    if (oldestKey != null)
+                    {
+                        _cache.TryRemove(oldestKey, out _);
+                    }
+                }
+            }
+
             var entry = new CacheEntry
             {
                 Value = value,

@@ -426,6 +426,106 @@ namespace ZeroData.Sql.Tests
             Assert.Equal(2, calls);
         }
 
+        [Fact]
+        public void RetryPolicy_WithJitterAndOnRetry_CallsOnRetryWithJitteredDelay()
+        {
+            var retries = new List<(Exception ex, TimeSpan delay, int attempt)>();
+            var policy = new RetryPolicy
+            {
+                MaxRetryCount = 3,
+                InitialDelay = TimeSpan.FromMilliseconds(50),
+                EnableJitter = true,
+                OnRetry = (ex, delay, attempt) => retries.Add((ex, delay, attempt))
+            };
+
+            int calls = 0;
+            var result = policy.Execute(() =>
+            {
+                calls++;
+                if (calls <= 2)
+                    throw new TimeoutException("Database connection timeout");
+                return "completed";
+            });
+
+            Assert.Equal("completed", result);
+            Assert.Equal(3, calls);
+            Assert.Equal(2, retries.Count);
+
+            // Attempt 1: 50ms * [0.8..1.2] = [40ms..60ms]
+            Assert.Equal(1, retries[0].attempt);
+            Assert.InRange(retries[0].delay.TotalMilliseconds, 35, 65);
+
+            // Attempt 2: 100ms * [0.8..1.2] = [80ms..120ms]
+            Assert.Equal(2, retries[1].attempt);
+            Assert.InRange(retries[1].delay.TotalMilliseconds, 75, 125);
+        }
+
+        [Fact]
+        public void RetryPolicy_DisableJitter_DelayMatchesMultiplierExactly()
+        {
+            var retries = new List<(Exception ex, TimeSpan delay, int attempt)>();
+            var policy = new RetryPolicy
+            {
+                MaxRetryCount = 2,
+                InitialDelay = TimeSpan.FromMilliseconds(20),
+                BackoffMultiplier = 2.0,
+                EnableJitter = false,
+                OnRetry = (ex, delay, attempt) => retries.Add((ex, delay, attempt))
+            };
+
+            int calls = 0;
+            policy.Execute(() =>
+            {
+                calls++;
+                if (calls <= 2)
+                    throw new TimeoutException("Temporary failure");
+                return true;
+            });
+
+            Assert.Equal(2, retries.Count);
+            Assert.Equal(TimeSpan.FromMilliseconds(20), retries[0].delay);
+            Assert.Equal(TimeSpan.FromMilliseconds(40), retries[1].delay);
+        }
+
+        [Fact]
+        public void MemoryL2QueryCache_MaxCapacity_EvictsEarliestExpiringWhenFull()
+        {
+            var cache = new MemoryL2QueryCache { MaxCapacity = 3 };
+
+            cache.Set("k1", 1, TimeSpan.FromMinutes(5));
+            cache.Set("k2", 2, TimeSpan.FromMinutes(1)); // earliest expiry
+            cache.Set("k3", 3, TimeSpan.FromMinutes(10));
+
+            Assert.Equal(3, cache.Count);
+
+            // Adding 4th item should evict k2 (earliest expiry)
+            cache.Set("k4", 4, TimeSpan.FromMinutes(15));
+
+            Assert.Equal(3, cache.Count);
+            Assert.False(cache.TryGet<int>("k2", out _));
+            Assert.True(cache.TryGet<int>("k1", out _));
+            Assert.True(cache.TryGet<int>("k3", out _));
+            Assert.True(cache.TryGet<int>("k4", out _));
+        }
+
+        [Fact]
+        public async Task MemoryL2QueryCache_PruneExpired_PurgesOnlyExpiredEntries()
+        {
+            var cache = new MemoryL2QueryCache();
+            cache.Set("fast_exp", 1, TimeSpan.FromMilliseconds(20));
+            cache.Set("slow_exp", 2, TimeSpan.FromMinutes(5));
+
+            Assert.Equal(2, cache.Count);
+            await Task.Delay(50);
+
+            int pruned = cache.PruneExpired();
+
+            Assert.Equal(1, pruned);
+            Assert.Equal(1, cache.Count);
+            Assert.False(cache.TryGet<int>("fast_exp", out _));
+            Assert.True(cache.TryGet<int>("slow_exp", out _));
+        }
+
         #endregion
     }
 }

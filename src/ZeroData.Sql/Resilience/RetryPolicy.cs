@@ -30,14 +30,42 @@ namespace ZeroData.Sql.Resilience
         public double BackoffMultiplier { get; set; } = 2.0;
 
         /// <summary>
+        /// When true (default), applies random jitter (+/- 20% variance) to backoff delays to prevent thundering herd deadlocks.
+        /// </summary>
+        public bool EnableJitter { get; set; } = true;
+
+        /// <summary>
+        /// Optional callback invoked on each retry attempt: (Exception ex, TimeSpan nextDelay, int attemptNumber).
+        /// Useful for enterprise logging and diagnostics.
+        /// </summary>
+        public Action<Exception, TimeSpan, int> OnRetry { get; set; }
+
+        /// <summary>
         /// Optional custom predicate to classify transient exceptions.
         /// </summary>
         public Func<Exception, bool> TransientPredicate { get; set; }
+
+        private static readonly Random _rng = new Random();
+        private static readonly object _rngLock = new object();
 
         /// <summary>
         /// Default retry policy instance.
         /// </summary>
         public static RetryPolicy Default => new RetryPolicy();
+
+        private TimeSpan ComputeDelay(TimeSpan currentDelay)
+        {
+            if (!EnableJitter) return currentDelay;
+
+            double factor;
+            lock (_rngLock)
+            {
+                factor = 0.8 + (_rng.NextDouble() * 0.4); // 0.8x to 1.2x
+            }
+
+            var ms = currentDelay.TotalMilliseconds * factor;
+            return TimeSpan.FromMilliseconds(Math.Min(ms, MaxDelay.TotalMilliseconds));
+        }
 
         /// <summary>
         /// Determines whether an exception represents a transient database failure.
@@ -116,7 +144,9 @@ namespace ZeroData.Sql.Resilience
                 }
                 catch (Exception ex) when (attempts <= MaxRetryCount && IsTransient(ex))
                 {
-                    Thread.Sleep(delay);
+                    var actualDelay = ComputeDelay(delay);
+                    OnRetry?.Invoke(ex, actualDelay, attempts);
+                    Thread.Sleep(actualDelay);
                     delay = TimeSpan.FromMilliseconds(Math.Min(delay.TotalMilliseconds * BackoffMultiplier, MaxDelay.TotalMilliseconds));
                 }
             }
@@ -141,7 +171,9 @@ namespace ZeroData.Sql.Resilience
                 }
                 catch (Exception ex) when (attempts <= MaxRetryCount && IsTransient(ex))
                 {
-                    await Task.Delay(delay, ct).ConfigureAwait(false);
+                    var actualDelay = ComputeDelay(delay);
+                    OnRetry?.Invoke(ex, actualDelay, attempts);
+                    await Task.Delay(actualDelay, ct).ConfigureAwait(false);
                     delay = TimeSpan.FromMilliseconds(Math.Min(delay.TotalMilliseconds * BackoffMultiplier, MaxDelay.TotalMilliseconds));
                 }
             }
