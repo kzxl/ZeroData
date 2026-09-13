@@ -87,6 +87,11 @@ namespace ZeroData.Sql.Dialects
         string GenerateBulkInsertSql(string tableName, System.Collections.Generic.IReadOnlyList<string> columns, System.Collections.Generic.IReadOnlyList<System.Collections.Generic.IReadOnlyList<string>> parameterRows);
 
         /// <summary>
+        /// Generates a bulk merge / upsert SQL statement for the dialect based on primary key columns.
+        /// </summary>
+        string GenerateBulkMergeSql(string tableName, System.Collections.Generic.IReadOnlyList<string> columns, System.Collections.Generic.IReadOnlyList<string> primaryKeyColumns, System.Collections.Generic.IReadOnlyList<System.Collections.Generic.IReadOnlyList<string>> parameterRows);
+
+        /// <summary>
         /// Gets a value indicating whether this database dialect supports transaction savepoints.
         /// </summary>
         bool SupportsSavepoints { get; }

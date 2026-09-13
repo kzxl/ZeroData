@@ -466,6 +466,111 @@ namespace ZeroData.Sql
             }
         }
 
+        /// <summary>
+        /// Upserts (merges) multiple entities: inserts new records or updates existing records matched by primary key.
+        /// Uses dialect-native UPSERT (ON CONFLICT DO UPDATE on SQLite/PostgreSQL, ON DUPLICATE KEY UPDATE on MySQL, MERGE on SQL Server).
+        /// </summary>
+        public static int BulkMerge<T>(IDbConnection connection, IEnumerable<T> entities,
+            IDbTransaction transaction = null, ISqlDialect dialect = null) where T : class
+        {
+            if (connection == null) throw new ArgumentNullException(nameof(connection));
+            if (entities == null) throw new ArgumentNullException(nameof(entities));
+
+            var d = dialect ?? SqlGenerator.DefaultDialect;
+            var entityList = entities as IReadOnlyList<T> ?? entities.ToList();
+            if (entityList.Count == 0) return 0;
+
+            var mapping = MappingCache.GetMapping<T>();
+            var primaryKeys = mapping.PrimaryKeys ?? mapping.Columns.Where(c => c.IsPrimaryKey).ToList();
+            if (primaryKeys.Count == 0)
+                throw new InvalidOperationException($"Entity {typeof(T).Name} has no primary key defined for merge/upsert.");
+
+            var allCols = mapping.Columns.Where(c => !c.IsDbGenerated || c.IsPrimaryKey).ToList();
+            var table = SqlGenerator.QuoteTableName(mapping.TableName, d);
+            var quotedCols = allCols.Select(c => d.QuoteIdentifier(c.ColumnName)).ToList();
+            var quotedPkCols = primaryKeys.Select(c => d.QuoteIdentifier(c.ColumnName)).ToList();
+
+            var rowsPerChunk = Math.Max(1, MaxParametersPerCommand / allCols.Count);
+            int totalAffected = 0;
+
+            foreach (var chunk in ChunkFast(entityList, rowsPerChunk))
+            {
+                var parameters = new DynamicParameters();
+                var parameterRows = new List<IReadOnlyList<string>>(chunk.Count);
+                for (int i = 0; i < chunk.Count; i++)
+                {
+                    var paramNames = new List<string>(allCols.Count);
+                    for (int j = 0; j < allCols.Count; j++)
+                    {
+                        var col = allCols[j];
+                        var paramName = $"@p{i}_{col.Property.Name}";
+                        var val = col.Getter != null ? col.Getter(chunk[i]) : col.Property.GetValue(chunk[i]);
+                        parameters.Add(paramName, val);
+                        paramNames.Add(paramName);
+                    }
+                    parameterRows.Add(paramNames);
+                }
+
+                var sql = d.GenerateBulkMergeSql(table, quotedCols, quotedPkCols, parameterRows);
+                totalAffected += connection.Execute(sql, parameters, transaction);
+            }
+
+            return totalAffected;
+        }
+
+        /// <summary>
+        /// Asynchronously upserts (merges) multiple entities: inserts new records or updates existing records matched by primary key.
+        /// </summary>
+        public static async Task<int> BulkMergeAsync<T>(IDbConnection connection, IEnumerable<T> entities,
+            IDbTransaction transaction = null, ISqlDialect dialect = null, CancellationToken cancellationToken = default) where T : class
+        {
+            if (connection == null) throw new ArgumentNullException(nameof(connection));
+            if (entities == null) throw new ArgumentNullException(nameof(entities));
+
+            var d = dialect ?? SqlGenerator.DefaultDialect;
+            var entityList = entities as IReadOnlyList<T> ?? entities.ToList();
+            if (entityList.Count == 0) return 0;
+
+            var mapping = MappingCache.GetMapping<T>();
+            var primaryKeys = mapping.PrimaryKeys ?? mapping.Columns.Where(c => c.IsPrimaryKey).ToList();
+            if (primaryKeys.Count == 0)
+                throw new InvalidOperationException($"Entity {typeof(T).Name} has no primary key defined for merge/upsert.");
+
+            var allCols = mapping.Columns.Where(c => !c.IsDbGenerated || c.IsPrimaryKey).ToList();
+            var table = SqlGenerator.QuoteTableName(mapping.TableName, d);
+            var quotedCols = allCols.Select(c => d.QuoteIdentifier(c.ColumnName)).ToList();
+            var quotedPkCols = primaryKeys.Select(c => d.QuoteIdentifier(c.ColumnName)).ToList();
+
+            var rowsPerChunk = Math.Max(1, MaxParametersPerCommand / allCols.Count);
+            int totalAffected = 0;
+
+            foreach (var chunk in ChunkFast(entityList, rowsPerChunk))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var parameters = new DynamicParameters();
+                var parameterRows = new List<IReadOnlyList<string>>(chunk.Count);
+                for (int i = 0; i < chunk.Count; i++)
+                {
+                    var paramNames = new List<string>(allCols.Count);
+                    for (int j = 0; j < allCols.Count; j++)
+                    {
+                        var col = allCols[j];
+                        var paramName = $"@p{i}_{col.Property.Name}";
+                        var val = col.Getter != null ? col.Getter(chunk[i]) : col.Property.GetValue(chunk[i]);
+                        parameters.Add(paramName, val);
+                        paramNames.Add(paramName);
+                    }
+                    parameterRows.Add(paramNames);
+                }
+
+                var sql = d.GenerateBulkMergeSql(table, quotedCols, quotedPkCols, parameterRows);
+                totalAffected += await connection.ExecuteAsync(new CommandDefinition(sql, parameters,
+                    transaction: transaction, cancellationToken: cancellationToken)).ConfigureAwait(false);
+            }
+
+            return totalAffected;
+        }
+
         private static IEnumerable<List<T>> ChunkFast<T>(IReadOnlyList<T> source, int size)
         {
             if (size <= 0) throw new ArgumentOutOfRangeException(nameof(size));

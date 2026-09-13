@@ -439,6 +439,40 @@ namespace ZeroData.Sql.ChangeTracking
                    _trackedEntities.Any(e => ReferenceEquals(e.Entity, entity));
         }
 
+        /// <summary>
+        /// Gets the original snapshot property values captured when the entity was first loaded or attached.
+        /// Returns an empty dictionary if the entity is not tracked or has no snapshot.
+        /// </summary>
+        public IReadOnlyDictionary<string, object> GetOriginalValues(object entity)
+        {
+            if (entity != null && _originalValues.TryGetValue(entity, out var values))
+            {
+                return new Dictionary<string, object>(values);
+            }
+            return new Dictionary<string, object>();
+        }
+
+        /// <summary>
+        /// Updates the original snapshot of a tracked entity with fresh values (used after reload).
+        /// </summary>
+        public void UpdateSnapshot(object entity, EntityMapping mapping)
+        {
+            if (entity == null || mapping == null) return;
+            var snapshot = new Dictionary<string, object>();
+            foreach (var col in mapping.Columns)
+            {
+                snapshot[col.Property.Name] = GetCompiledGetter(col.Property)(entity);
+            }
+            _originalValues[entity] = snapshot;
+
+            // Remove any pending Update state since entity is now synchronized
+            var existing = _trackedEntities.FirstOrDefault(e => ReferenceEquals(e.Entity, entity));
+            if (existing != null && existing.State == EntityState.Update)
+            {
+                _trackedEntities.Remove(existing);
+            }
+        }
+
         #endregion
     }
 

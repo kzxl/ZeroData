@@ -420,12 +420,47 @@ namespace ZeroData.Sql
             finally { if (ownTx) tx.Dispose(); }
         }
 
+        private string ApplyBeforeExecute(string sql, object param)
+        {
+            if (Interceptor?.OnBeforeExecute != null)
+            {
+                return Interceptor.OnBeforeExecute(sql, param) ?? sql;
+            }
+            return sql;
+        }
+
+        private void ApplyAfterExecute(string sql, System.Diagnostics.Stopwatch sw, int rowCount)
+        {
+            if (sw != null)
+            {
+                sw.Stop();
+                Interceptor?.OnAfterExecute?.Invoke(sql, sw.Elapsed, rowCount);
+            }
+        }
+
+        private void ApplyError(string sql, Exception ex)
+        {
+            Interceptor?.OnError?.Invoke(sql, ex);
+        }
+
         public IEnumerable<T> ExecuteQuery<T>(string query, params object[] parameters)
         {
             ThrowIfDisposed();
             EnsureConnectionOpen();
             var (sql, dp) = ConvertParams(query, parameters);
-            return Connection.Query<T>(sql, (object)dp, transaction: Transaction, commandTimeout: CommandTimeout, converters: Converters);
+            sql = ApplyBeforeExecute(sql, dp);
+            var sw = Profiler.StartQuery();
+            try
+            {
+                var results = Connection.Query<T>(sql, (object)dp, transaction: Transaction, commandTimeout: CommandTimeout, converters: Converters).ToList();
+                ApplyAfterExecute(sql, sw, results.Count);
+                return results;
+            }
+            catch (Exception ex)
+            {
+                ApplyError(sql, ex);
+                throw;
+            }
         }
 
         public int ExecuteCommand(string command, params object[] parameters)
@@ -433,7 +468,19 @@ namespace ZeroData.Sql
             ThrowIfDisposed();
             EnsureConnectionOpen();
             var (sql, dp) = ConvertParams(command, parameters);
-            return Connection.Execute(sql, (object)dp, transaction: Transaction, commandTimeout: CommandTimeout, converters: Converters);
+            sql = ApplyBeforeExecute(sql, dp);
+            var sw = Profiler.StartQuery();
+            try
+            {
+                var affected = Connection.Execute(sql, (object)dp, transaction: Transaction, commandTimeout: CommandTimeout, converters: Converters);
+                ApplyAfterExecute(sql, sw, affected);
+                return affected;
+            }
+            catch (Exception ex)
+            {
+                ApplyError(sql, ex);
+                throw;
+            }
         }
 
         /// <summary>
@@ -446,8 +493,20 @@ namespace ZeroData.Sql
         {
             ThrowIfDisposed();
             EnsureConnectionOpen();
-            return Connection.Query<T>(sql, parameters,
-                transaction: Transaction, commandTimeout: CommandTimeout, converters: Converters).ToList();
+            var effectiveSql = ApplyBeforeExecute(sql, parameters);
+            var sw = Profiler.StartQuery();
+            try
+            {
+                var results = Connection.Query<T>(effectiveSql, parameters,
+                    transaction: Transaction, commandTimeout: CommandTimeout, converters: Converters).ToList();
+                ApplyAfterExecute(effectiveSql, sw, results.Count);
+                return results;
+            }
+            catch (Exception ex)
+            {
+                ApplyError(effectiveSql, ex);
+                throw;
+            }
         }
 
         /// <summary>
@@ -458,11 +517,213 @@ namespace ZeroData.Sql
         {
             ThrowIfDisposed();
             await EnsureConnectionOpenAsync(ct).ConfigureAwait(false);
-            return (await Connection.QueryAsync<T>(
-                new CommandDefinition(sql, parameters,
-                    transaction: Transaction, commandTimeout: CommandTimeout,
-                    cancellationToken: ct), converters: Converters).ConfigureAwait(false)).ToList();
+            var effectiveSql = ApplyBeforeExecute(sql, parameters);
+            var sw = Profiler.StartQuery();
+            try
+            {
+                var results = (await Connection.QueryAsync<T>(
+                    new CommandDefinition(effectiveSql, parameters,
+                        transaction: Transaction, commandTimeout: CommandTimeout,
+                        cancellationToken: ct), converters: Converters).ConfigureAwait(false)).ToList();
+                ApplyAfterExecute(effectiveSql, sw, results.Count);
+                return results;
+            }
+            catch (Exception ex)
+            {
+                ApplyError(effectiveSql, ex);
+                throw;
+            }
         }
+
+        #region Stored Procedure Execution
+
+        /// <summary>
+        /// Executes a stored procedure and materializes the result set into entities of type T.
+        /// </summary>
+        public List<T> ExecuteStoredProcedure<T>(string spName, object parameters = null)
+        {
+            ThrowIfDisposed();
+            if (string.IsNullOrWhiteSpace(spName))
+                throw new ArgumentException("Stored procedure name cannot be null or empty.", nameof(spName));
+
+            EnsureConnectionOpen();
+            var sw = Profiler.StartQuery();
+            try
+            {
+                var results = Connection.Query<T>(spName, parameters,
+                    transaction: Transaction, commandTimeout: CommandTimeout,
+                    commandType: CommandType.StoredProcedure, converters: Converters).ToList();
+                ApplyAfterExecute(spName, sw, results.Count);
+                return results;
+            }
+            catch (Exception ex)
+            {
+                ApplyError(spName, ex);
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Executes a non-query stored procedure and returns the number of affected rows.
+        /// </summary>
+        public int ExecuteStoredProcedure(string spName, object parameters = null)
+        {
+            ThrowIfDisposed();
+            if (string.IsNullOrWhiteSpace(spName))
+                throw new ArgumentException("Stored procedure name cannot be null or empty.", nameof(spName));
+
+            EnsureConnectionOpen();
+            var sw = Profiler.StartQuery();
+            try
+            {
+                var affected = Connection.Execute(spName, parameters,
+                    transaction: Transaction, commandTimeout: CommandTimeout,
+                    commandType: CommandType.StoredProcedure, converters: Converters);
+                ApplyAfterExecute(spName, sw, affected);
+                return affected;
+            }
+            catch (Exception ex)
+            {
+                ApplyError(spName, ex);
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Asynchronously executes a stored procedure and materializes the result set into entities of type T.
+        /// </summary>
+        public async Task<List<T>> ExecuteStoredProcedureAsync<T>(string spName, object parameters = null, CancellationToken ct = default)
+        {
+            ThrowIfDisposed();
+            if (string.IsNullOrWhiteSpace(spName))
+                throw new ArgumentException("Stored procedure name cannot be null or empty.", nameof(spName));
+
+            await EnsureConnectionOpenAsync(ct).ConfigureAwait(false);
+            var sw = Profiler.StartQuery();
+            try
+            {
+                var results = (await Connection.QueryAsync<T>(spName, parameters,
+                    transaction: Transaction, commandTimeout: CommandTimeout,
+                    commandType: CommandType.StoredProcedure, cancellationToken: ct, converters: Converters).ConfigureAwait(false)).ToList();
+                ApplyAfterExecute(spName, sw, results.Count);
+                return results;
+            }
+            catch (Exception ex)
+            {
+                ApplyError(spName, ex);
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Asynchronously executes a non-query stored procedure and returns the number of affected rows.
+        /// </summary>
+        public async Task<int> ExecuteStoredProcedureAsync(string spName, object parameters = null, CancellationToken ct = default)
+        {
+            ThrowIfDisposed();
+            if (string.IsNullOrWhiteSpace(spName))
+                throw new ArgumentException("Stored procedure name cannot be null or empty.", nameof(spName));
+
+            await EnsureConnectionOpenAsync(ct).ConfigureAwait(false);
+            var sw = Profiler.StartQuery();
+            try
+            {
+                var affected = await Connection.ExecuteAsync(spName, parameters,
+                    transaction: Transaction, commandTimeout: CommandTimeout,
+                    commandType: CommandType.StoredProcedure, cancellationToken: ct).ConfigureAwait(false);
+                ApplyAfterExecute(spName, sw, affected);
+                return affected;
+            }
+            catch (Exception ex)
+            {
+                ApplyError(spName, ex);
+                throw;
+            }
+        }
+
+        #endregion
+
+        #region Entity Lifecycle & Audit
+
+        /// <summary>
+        /// Gets the original property values of a tracked entity when it was first loaded.
+        /// Ideal for audit logging changed properties.
+        /// </summary>
+        public IReadOnlyDictionary<string, object> GetOriginalValues(object entity)
+        {
+            ThrowIfDisposed();
+            return _changeTracker.GetOriginalValues(entity);
+        }
+
+        /// <summary>
+        /// Reloads the entity from the database, overwriting its current in-memory properties
+        /// with fresh values and resetting its tracked snapshot.
+        /// </summary>
+        public void Reload<T>(T entity) where T : class
+        {
+            ThrowIfDisposed();
+            if (entity == null) throw new ArgumentNullException(nameof(entity));
+
+            var mapping = MappingCache.GetMapping<T>();
+            if (mapping.PrimaryKeys.Count == 0)
+                throw new InvalidOperationException($"Entity '{typeof(T).Name}' has no primary key defined.");
+
+            var pkCol = mapping.PrimaryKeys[0];
+            var pkVal = pkCol.Property.GetValue(entity);
+
+            var fresh = GetTable<T>().Find(pkVal);
+            if (fresh == null)
+                throw new InvalidOperationException($"Entity of type '{typeof(T).Name}' with key '{pkVal}' was not found in the database.");
+
+            // Copy properties from fresh to existing entity
+            foreach (var col in mapping.Columns)
+            {
+                var val = col.Property.GetValue(fresh);
+                if (col.Setter != null)
+                    col.Setter(entity, val);
+                else
+                    col.Property.SetValue(entity, val);
+            }
+
+            // Synchronize snapshot in ChangeTracker
+            _changeTracker.UpdateSnapshot(entity, mapping);
+        }
+
+        /// <summary>
+        /// Asynchronously reloads the entity from the database, overwriting its current in-memory properties
+        /// with fresh values and resetting its tracked snapshot.
+        /// </summary>
+        public async Task ReloadAsync<T>(T entity, CancellationToken ct = default) where T : class
+        {
+            ThrowIfDisposed();
+            if (entity == null) throw new ArgumentNullException(nameof(entity));
+
+            var mapping = MappingCache.GetMapping<T>();
+            if (mapping.PrimaryKeys.Count == 0)
+                throw new InvalidOperationException($"Entity '{typeof(T).Name}' has no primary key defined.");
+
+            var pkCol = mapping.PrimaryKeys[0];
+            var pkVal = pkCol.Property.GetValue(entity);
+
+            var fresh = await GetTable<T>().FindAsync(pkVal).ConfigureAwait(false);
+            if (fresh == null)
+                throw new InvalidOperationException($"Entity of type '{typeof(T).Name}' with key '{pkVal}' was not found in the database.");
+
+            // Copy properties from fresh to existing entity
+            foreach (var col in mapping.Columns)
+            {
+                var val = col.Property.GetValue(fresh);
+                if (col.Setter != null)
+                    col.Setter(entity, val);
+                else
+                    col.Property.SetValue(entity, val);
+            }
+
+            // Synchronize snapshot in ChangeTracker
+            _changeTracker.UpdateSnapshot(entity, mapping);
+        }
+
+        #endregion
 
         #endregion
 
@@ -502,8 +763,20 @@ namespace ZeroData.Sql
             ThrowIfDisposed();
             await EnsureConnectionOpenAsync().ConfigureAwait(false);
             var (sql, dp) = ConvertParams(query, parameters);
-            return await Connection.QueryAsync<T>(sql, (object)dp,
-                transaction: Transaction, commandTimeout: CommandTimeout, converters: Converters).ConfigureAwait(false);
+            sql = ApplyBeforeExecute(sql, dp);
+            var sw = Profiler.StartQuery();
+            try
+            {
+                var results = (await Connection.QueryAsync<T>(sql, (object)dp,
+                    transaction: Transaction, commandTimeout: CommandTimeout, converters: Converters).ConfigureAwait(false)).ToList();
+                ApplyAfterExecute(sql, sw, results.Count);
+                return results;
+            }
+            catch (Exception ex)
+            {
+                ApplyError(sql, ex);
+                throw;
+            }
         }
 
         public async Task<int> ExecuteCommandAsync(string command, params object[] parameters)
@@ -511,8 +784,20 @@ namespace ZeroData.Sql
             ThrowIfDisposed();
             await EnsureConnectionOpenAsync().ConfigureAwait(false);
             var (sql, dp) = ConvertParams(command, parameters);
-            return await Connection.ExecuteAsync(sql, (object)dp,
-                transaction: Transaction, commandTimeout: CommandTimeout).ConfigureAwait(false);
+            sql = ApplyBeforeExecute(sql, dp);
+            var sw = Profiler.StartQuery();
+            try
+            {
+                var affected = await Connection.ExecuteAsync(sql, (object)dp,
+                    transaction: Transaction, commandTimeout: CommandTimeout).ConfigureAwait(false);
+                ApplyAfterExecute(sql, sw, affected);
+                return affected;
+            }
+            catch (Exception ex)
+            {
+                ApplyError(sql, ex);
+                throw;
+            }
         }
 
         #endregion
@@ -878,6 +1163,30 @@ namespace ZeroData.Sql
             ThrowIfDisposed();
             await EnsureConnectionOpenAsync(ct).ConfigureAwait(false);
             var res = await BulkOperations.BulkDeleteAsync(Connection, entities, Transaction, Dialect, ct).ConfigureAwait(false);
+            QueryCache?.Invalidate(typeof(T));
+            return res;
+        }
+
+        /// <summary>
+        /// Bulk merges (upserts) entities: inserts new records or updates existing records matched by primary key.
+        /// </summary>
+        public int BulkMerge<T>(IEnumerable<T> entities) where T : class
+        {
+            ThrowIfDisposed();
+            EnsureConnectionOpen();
+            var res = BulkOperations.BulkMerge(Connection, entities, Transaction, Dialect);
+            QueryCache?.Invalidate(typeof(T));
+            return res;
+        }
+
+        /// <summary>
+        /// Asynchronously bulk merges (upserts) entities: inserts new records or updates existing records matched by primary key.
+        /// </summary>
+        public async Task<int> BulkMergeAsync<T>(IEnumerable<T> entities, CancellationToken ct = default) where T : class
+        {
+            ThrowIfDisposed();
+            await EnsureConnectionOpenAsync(ct).ConfigureAwait(false);
+            var res = await BulkOperations.BulkMergeAsync(Connection, entities, Transaction, Dialect, ct).ConfigureAwait(false);
             QueryCache?.Invalidate(typeof(T));
             return res;
         }

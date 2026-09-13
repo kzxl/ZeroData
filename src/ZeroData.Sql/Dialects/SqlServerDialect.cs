@@ -119,6 +119,23 @@ namespace ZeroData.Sql.Dialects
             return $"INSERT INTO {tableName} ({cols}) VALUES {rows}";
         }
 
+        public string GenerateBulkMergeSql(string tableName, System.Collections.Generic.IReadOnlyList<string> columns, System.Collections.Generic.IReadOnlyList<string> primaryKeyColumns, System.Collections.Generic.IReadOnlyList<System.Collections.Generic.IReadOnlyList<string>> parameterRows)
+        {
+            var cols = string.Join(", ", columns);
+            var rows = string.Join(", ", System.Linq.Enumerable.Select(parameterRows, r => $"({string.Join(", ", r)})"));
+            var onClause = string.Join(" AND ", System.Linq.Enumerable.Select(primaryKeyColumns, pk => $"t.{pk} = s.{pk}"));
+            var updateCols = System.Linq.Enumerable.ToList(System.Linq.Enumerable.Where(columns, c => !System.Linq.Enumerable.Contains(primaryKeyColumns, c, StringComparer.OrdinalIgnoreCase)));
+
+            var updateClause = updateCols.Count > 0
+                ? $"WHEN MATCHED THEN UPDATE SET {string.Join(", ", System.Linq.Enumerable.Select(updateCols, c => $"t.{c} = s.{c}"))}"
+                : "";
+
+            var insertCols = string.Join(", ", columns);
+            var insertVals = string.Join(", ", System.Linq.Enumerable.Select(columns, c => $"s.{c}"));
+
+            return $"MERGE INTO {tableName} AS t USING (VALUES {rows}) AS s ({cols}) ON ({onClause}) {updateClause} WHEN NOT MATCHED THEN INSERT ({insertCols}) VALUES ({insertVals});";
+        }
+
         public bool SupportsSavepoints => true;
 
         public string GetCreateSavepointSql(string name) => $"SAVE TRANSACTION {QuoteIdentifier(name)};";

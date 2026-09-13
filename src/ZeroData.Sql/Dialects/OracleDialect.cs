@@ -119,6 +119,30 @@ namespace ZeroData.Sql.Dialects
             return $"INSERT ALL {string.Join(" ", intoClauses)} SELECT * FROM dual";
         }
 
+        public string GenerateBulkMergeSql(string tableName, IReadOnlyList<string> columns, IReadOnlyList<string> primaryKeyColumns, IReadOnlyList<IReadOnlyList<string>> parameterRows)
+        {
+            var cols = string.Join(", ", columns);
+            var onClause = string.Join(" AND ", primaryKeyColumns.Select(pk => $"t.{pk} = s.{pk}"));
+            var updateCols = columns.Where(c => !primaryKeyColumns.Contains(c, StringComparer.OrdinalIgnoreCase)).ToList();
+
+            var updateClause = updateCols.Count > 0
+                ? $"WHEN MATCHED THEN UPDATE SET {string.Join(", ", updateCols.Select(c => $"t.{c} = s.{c}"))}"
+                : "";
+
+            var insertCols = string.Join(", ", columns);
+            var insertVals = string.Join(", ", columns.Select(c => $"s.{c}"));
+
+            // Oracle constructs source table via UNION ALL SELECT from dual
+            var selectClauses = parameterRows.Select(r =>
+            {
+                var selectItems = columns.Zip(r, (col, val) => $"{val} AS {col}");
+                return $"SELECT {string.Join(", ", selectItems)} FROM dual";
+            });
+            var sourceTable = string.Join(" UNION ALL ", selectClauses);
+
+            return $"MERGE INTO {tableName} t USING ({sourceTable}) s ON ({onClause}) {updateClause} WHEN NOT MATCHED THEN INSERT ({insertCols}) VALUES ({insertVals})";
+        }
+
         public bool SupportsSavepoints => true;
 
         public string GetCreateSavepointSql(string name) => $"SAVEPOINT {QuoteIdentifier(name)}";

@@ -113,6 +113,21 @@ namespace ZeroData.Sql.Dialects
             return $"INSERT INTO {tableName} ({cols}) VALUES {rows}";
         }
 
+        public string GenerateBulkMergeSql(string tableName, System.Collections.Generic.IReadOnlyList<string> columns, System.Collections.Generic.IReadOnlyList<string> primaryKeyColumns, System.Collections.Generic.IReadOnlyList<System.Collections.Generic.IReadOnlyList<string>> parameterRows)
+        {
+            var cols = string.Join(", ", columns);
+            var rows = string.Join(", ", System.Linq.Enumerable.Select(parameterRows, r => $"({string.Join(", ", r)})"));
+            var pks = string.Join(", ", primaryKeyColumns);
+            var updateCols = System.Linq.Enumerable.ToList(System.Linq.Enumerable.Where(columns, c => !System.Linq.Enumerable.Contains(primaryKeyColumns, c, StringComparer.OrdinalIgnoreCase)));
+
+            if (updateCols.Count > 0)
+            {
+                var updateClause = string.Join(", ", System.Linq.Enumerable.Select(updateCols, c => $"{c} = excluded.{c}"));
+                return $"INSERT INTO {tableName} ({cols}) VALUES {rows} ON CONFLICT ({pks}) DO UPDATE SET {updateClause}";
+            }
+            return $"INSERT OR IGNORE INTO {tableName} ({cols}) VALUES {rows}";
+        }
+
         public bool SupportsSavepoints => true;
 
         public string GetCreateSavepointSql(string name) => $"SAVEPOINT {QuoteIdentifier(name)};";

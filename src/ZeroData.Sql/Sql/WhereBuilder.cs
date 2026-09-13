@@ -221,7 +221,7 @@ namespace ZeroData.Sql.Sql
                 return IsSqlServer() ? $"LEN({inner})" : $"LENGTH({inner})";
             }
 
-            // DateTime member access: Year, Month, Day, Date
+            // DateTime member access: Year, Month, Day, Date, Hour, Minute, Second
             if ((member.Member.DeclaringType == typeof(DateTime) || member.Expression?.Type == typeof(DateTime)) &&
                 ContainsEntityParameter(member.Expression))
             {
@@ -231,6 +231,9 @@ namespace ZeroData.Sql.Sql
                     case "Month":
                     case "Day":
                     case "Date":
+                    case "Hour":
+                    case "Minute":
+                    case "Second":
                         var inner = Visit(member.Expression);
                         return TranslateDateTimeMember(member.Member.Name, inner);
                 }
@@ -487,6 +490,9 @@ namespace ZeroData.Sql.Sql
                     case "Month": return $"MONTH({inner})";
                     case "Day": return $"DAY({inner})";
                     case "Date": return $"CAST({inner} AS DATE)";
+                    case "Hour": return $"DATEPART(hour, {inner})";
+                    case "Minute": return $"DATEPART(minute, {inner})";
+                    case "Second": return $"DATEPART(second, {inner})";
                 }
             }
             else if (IsPostgreSql())
@@ -497,6 +503,9 @@ namespace ZeroData.Sql.Sql
                     case "Month": return $"EXTRACT(MONTH FROM {inner})";
                     case "Day": return $"EXTRACT(DAY FROM {inner})";
                     case "Date": return $"CAST({inner} AS DATE)";
+                    case "Hour": return $"EXTRACT(HOUR FROM {inner})";
+                    case "Minute": return $"EXTRACT(MINUTE FROM {inner})";
+                    case "Second": return $"EXTRACT(SECOND FROM {inner})";
                 }
             }
             else if (IsMySql())
@@ -507,6 +516,9 @@ namespace ZeroData.Sql.Sql
                     case "Month": return $"MONTH({inner})";
                     case "Day": return $"DAY({inner})";
                     case "Date": return $"DATE({inner})";
+                    case "Hour": return $"HOUR({inner})";
+                    case "Minute": return $"MINUTE({inner})";
+                    case "Second": return $"SECOND({inner})";
                 }
             }
             else // SQLite or default
@@ -517,6 +529,9 @@ namespace ZeroData.Sql.Sql
                     case "Month": return $"CAST(strftime('%m', {inner}) AS INTEGER)";
                     case "Day": return $"CAST(strftime('%d', {inner}) AS INTEGER)";
                     case "Date": return $"date({inner})";
+                    case "Hour": return $"CAST(strftime('%H', {inner}) AS INTEGER)";
+                    case "Minute": return $"CAST(strftime('%M', {inner}) AS INTEGER)";
+                    case "Second": return $"CAST(strftime('%S', {inner}) AS INTEGER)";
                 }
             }
 

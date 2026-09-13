@@ -110,6 +110,23 @@ namespace ZeroData.Sql.Dialects
             return $"INSERT INTO {tableName} ({cols}) VALUES {rows}";
         }
 
+        public string GenerateBulkMergeSql(string tableName, IReadOnlyList<string> columns, IReadOnlyList<string> primaryKeyColumns, IReadOnlyList<IReadOnlyList<string>> parameterRows)
+        {
+            var cols = string.Join(", ", columns);
+            var rows = string.Join(", ", parameterRows.Select(r => $"({string.Join(", ", r)})"));
+            var onClause = string.Join(" AND ", primaryKeyColumns.Select(pk => $"t.{pk} = s.{pk}"));
+            var updateCols = columns.Where(c => !primaryKeyColumns.Contains(c, StringComparer.OrdinalIgnoreCase)).ToList();
+
+            var updateClause = updateCols.Count > 0
+                ? $"WHEN MATCHED THEN UPDATE SET {string.Join(", ", updateCols.Select(c => $"t.{c} = s.{c}"))}"
+                : "";
+
+            var insertCols = string.Join(", ", columns);
+            var insertVals = string.Join(", ", columns.Select(c => $"s.{c}"));
+
+            return $"MERGE INTO {tableName} t USING (VALUES {rows}) s ({cols}) ON ({onClause}) {updateClause} WHEN NOT MATCHED THEN INSERT ({insertCols}) VALUES ({insertVals})";
+        }
+
         public bool SupportsSavepoints => true;
 
         public string GetCreateSavepointSql(string name) => $"SAVEPOINT {QuoteIdentifier(name)};";
