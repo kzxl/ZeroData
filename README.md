@@ -4,7 +4,8 @@
 [![.NET Multi-Targeting](https://img.shields.io/badge/.NET-8.0%20%7C%204.6.2%20%7C%20Standard%202.0-purple.svg)](https://dotnet.microsoft.com/)
 [![Apache Arrow IPC](https://img.shields.io/badge/Format-Apache%20Arrow%20IPC-blue.svg)]()
 [![Zero External Dependencies](https://img.shields.io/badge/Dependencies-0%20(Pure%20C%23)-brightgreen.svg)]()
-[![NuGet Version](https://img.shields.io/badge/NuGet-1.0.0-blue.svg)](https://www.nuget.org/packages/ZeroData.Core)
+[![Tests Passing](https://img.shields.io/badge/tests-527%20passed-brightgreen.svg)]()
+[![NuGet Version](https://img.shields.io/badge/NuGet-1.1.0-blue.svg)](https://www.nuget.org/packages/ZeroData.Core)
 
 **ZeroData** is a comprehensive, blazing-fast data platform for .NET, combining in-memory streaming analytics and high-performance RDBMS data access for the **Zero Universe** ecosystem.
 
@@ -104,6 +105,15 @@ var resampled = df.Resample("Timestamp", TimeSpan.FromSeconds(1), AggregationTyp
 | **Relational 3-Table JOIN Projection** | **1,000 rows** | **10 ms** | **100,000 rows/sec** | Direct multi-table DTO mapping |
 | **Large-Volume Record Streaming** | **20,000 rows** | **133 ms** | **150,376 rows/sec** | Bounded at 8.5 MB RAM for 20k complex entities |
 | **Concurrent Multi-Connection Load** | **20 parallel tasks** | **96.5 ms avg** | Concurrent async | 0 deadlocks, zero connection pool contention |
+
+---
+
+## 📜 Release History
+
+| Version | Release Date | Key Milestones & Highlights |
+| :--- | :---: | :--- |
+| **`v1.1.0`** | 2026-09-16 | **High-Performance Text Querying & Sovereign SQL Parity**:<br/>• Added zero-alloc `TextDotPathQuery` and template string interpolator.<br/>• Fast string pooling and compact memory dictionary.<br/>• Full LINQ to SQL parity in `ZeroData.Sql`: batch set operations, compiled expression tree materializers, 0 GC unboxing.<br/>• CLI code generator `zerodata-sql-codegen` for automated DBML/schema entity scaffolding.<br/>• 527 passing unit and integration tests (100% success rate). |
+| **`v1.0.0`** | 2026-09-09 | **Initial Sovereign Release**:<br/>• Pure C# columnar `DataFrame` engine with Apache Arrow IPC streaming.<br/>• Relational SIMD hash joins and temporal resampling.<br/>• High-performance ADO.NET micro-ORM foundation. |
 
 ---
 
