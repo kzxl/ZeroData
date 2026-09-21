@@ -5,7 +5,7 @@
 [![Apache Arrow IPC](https://img.shields.io/badge/Format-Apache%20Arrow%20IPC-blue.svg)]()
 [![Zero External Dependencies](https://img.shields.io/badge/Dependencies-0%20(Pure%20C%23)-brightgreen.svg)]()
 [![Tests Passing](https://img.shields.io/badge/tests-527%20passed-brightgreen.svg)]()
-[![NuGet Version](https://img.shields.io/badge/NuGet-1.1.0-blue.svg)](https://www.nuget.org/packages/ZeroData.Core)
+[![NuGet Version](https://img.shields.io/badge/NuGet-1.2.0-blue.svg)](https://www.nuget.org/packages/ZeroData.Core)
 
 **ZeroData** is a comprehensive, blazing-fast data platform for .NET, combining in-memory streaming analytics and high-performance RDBMS data access for the **Zero Universe** ecosystem.
 
@@ -112,6 +112,7 @@ var resampled = df.Resample("Timestamp", TimeSpan.FromSeconds(1), AggregationTyp
 
 | Version | Release Date | Key Milestones & Highlights |
 | :--- | :---: | :--- |
+| **`v1.2.0`** | 2026-09-21 | **True Zero-Alloc Materialization & Chained Flat Hash Join**:<br/>• Direct typed ADO.NET accessors (`GetInt32`, `GetDouble`, `GetDecimal`, etc.) in `EntityMaterializer` eliminating value-type boxing.<br/>• Zero-boxing column appenders in `DataFrame.Ado` with optimistic direct dispatch.<br/>• Chained Flat-Array Hash Table in `DataFrame.Join` eliminating per-key `List<int>` heap allocations.<br/>• 522 passing unit and integration tests (100% success rate). |
 | **`v1.1.0`** | 2026-09-16 | **High-Performance Text Querying & Sovereign SQL Parity**:<br/>• Added zero-alloc `TextDotPathQuery` and template string interpolator.<br/>• Fast string pooling and compact memory dictionary.<br/>• Full LINQ to SQL parity in `ZeroData.Sql`: batch set operations, compiled expression tree materializers, 0 GC unboxing.<br/>• CLI code generator `zerodata-sql-codegen` for automated DBML/schema entity scaffolding.<br/>• 527 passing unit and integration tests (100% success rate). |
 | **`v1.0.0`** | 2026-09-09 | **Initial Sovereign Release**:<br/>• Pure C# columnar `DataFrame` engine with Apache Arrow IPC streaming.<br/>• Relational SIMD hash joins and temporal resampling.<br/>• High-performance ADO.NET micro-ORM foundation. |
 
