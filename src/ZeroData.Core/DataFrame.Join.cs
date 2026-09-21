@@ -143,26 +143,36 @@ namespace ZeroData.Core
             out List<int> rightIndices)
             where TKey : notnull
         {
-            // 1. Build Phase: unboxed hash table
-            var rightMap = comparer != null
-                ? new Dictionary<TKey, List<int>>(rightRowCount, comparer)
-                : new Dictionary<TKey, List<int>>(rightRowCount);
+            // 1. Build Phase: Chained Flat-Array Hash Table (Zero per-key heap allocations)
+            int bucketCount = 16;
+            while (bucketCount < rightRowCount * 2 && bucketCount > 0)
+            {
+                bucketCount <<= 1;
+            }
+            if (bucketCount <= 0) bucketCount = 1 << 24;
+            int bucketMask = bucketCount - 1;
+
+            int[] head = new int[bucketCount];
+            for (int i = 0; i < bucketCount; i++) head[i] = -1;
+
+            int[] next = new int[rightRowCount];
+            for (int i = 0; i < rightRowCount; i++) next[i] = -1;
 
             var rData = rCol.RawData;
             bool rHasNulls = rCol.HasNulls;
 
-            for (int r = 0; r < rightRowCount; r++)
+            // Iterate backwards so that probing traverses matching rows in natural ascending order (FIFO)
+            for (int r = rightRowCount - 1; r >= 0; r--)
             {
                 if (rHasNulls && rCol.IsNull(r)) continue;
                 TKey val = rData[r];
                 if (val == null) continue;
 
-                if (!rightMap.TryGetValue(val, out var list))
-                {
-                    list = new List<int>(1);
-                    rightMap[val] = list;
-                }
-                list.Add(r);
+                int hash = (comparer != null ? comparer.GetHashCode(val) : val.GetHashCode()) & 0x7FFFFFFF;
+                int bucket = hash & bucketMask;
+
+                next[r] = head[bucket];
+                head[bucket] = r;
             }
 
             // 2. Probe Phase
@@ -197,17 +207,29 @@ namespace ZeroData.Core
                     continue;
                 }
 
-                if (rightMap.TryGetValue(val, out var matches))
+                int hash = (comparer != null ? comparer.GetHashCode(val) : val.GetHashCode()) & 0x7FFFFFFF;
+                int bucket = hash & bucketMask;
+
+                int r = head[bucket];
+                bool matched = false;
+
+                while (r >= 0)
                 {
-                    for (int m = 0; m < matches.Count; m++)
+                    bool eq = comparer != null
+                        ? comparer.Equals(rData[r], val)
+                        : EqualityComparer<TKey>.Default.Equals(rData[r], val);
+
+                    if (eq)
                     {
-                        int rIdx = matches[m];
                         leftIndices.Add(l);
-                        rightIndices.Add(rIdx);
-                        if (rightMatched != null) rightMatched[rIdx] = true;
+                        rightIndices.Add(r);
+                        matched = true;
+                        if (rightMatched != null) rightMatched[r] = true;
                     }
+                    r = next[r];
                 }
-                else if (joinType == JoinType.Left || joinType == JoinType.FullOuter)
+
+                if (!matched && (joinType == JoinType.Left || joinType == JoinType.FullOuter))
                 {
                     leftIndices.Add(l);
                     rightIndices.Add(-1);

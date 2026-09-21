@@ -155,6 +155,62 @@ namespace ZeroData.Sql.Execution
             return sb.ToString();
         }
 
+        private static readonly MethodInfo _isDbNullMethod = typeof(IDataRecord).GetMethod(nameof(IDataRecord.IsDBNull), new[] { typeof(int) });
+        private static readonly MethodInfo _getValueMethod = typeof(IDataRecord).GetMethod(nameof(IDataRecord.GetValue), new[] { typeof(int) });
+        private static readonly MethodInfo _getInt32Method = typeof(IDataRecord).GetMethod(nameof(IDataRecord.GetInt32), new[] { typeof(int) });
+        private static readonly MethodInfo _getInt64Method = typeof(IDataRecord).GetMethod(nameof(IDataRecord.GetInt64), new[] { typeof(int) });
+        private static readonly MethodInfo _getInt16Method = typeof(IDataRecord).GetMethod(nameof(IDataRecord.GetInt16), new[] { typeof(int) });
+        private static readonly MethodInfo _getByteMethod = typeof(IDataRecord).GetMethod(nameof(IDataRecord.GetByte), new[] { typeof(int) });
+        private static readonly MethodInfo _getDoubleMethod = typeof(IDataRecord).GetMethod(nameof(IDataRecord.GetDouble), new[] { typeof(int) });
+        private static readonly MethodInfo _getFloatMethod = typeof(IDataRecord).GetMethod(nameof(IDataRecord.GetFloat), new[] { typeof(int) });
+        private static readonly MethodInfo _getDecimalMethod = typeof(IDataRecord).GetMethod(nameof(IDataRecord.GetDecimal), new[] { typeof(int) });
+        private static readonly MethodInfo _getBooleanMethod = typeof(IDataRecord).GetMethod(nameof(IDataRecord.GetBoolean), new[] { typeof(int) });
+        private static readonly MethodInfo _getDateTimeMethod = typeof(IDataRecord).GetMethod(nameof(IDataRecord.GetDateTime), new[] { typeof(int) });
+        private static readonly MethodInfo _getGuidMethod = typeof(IDataRecord).GetMethod(nameof(IDataRecord.GetGuid), new[] { typeof(int) });
+        private static readonly MethodInfo _getStringMethod = typeof(IDataRecord).GetMethod(nameof(IDataRecord.GetString), new[] { typeof(int) });
+        private static readonly MethodInfo _convertFromDbMethod = typeof(ValueConverterCollection).GetMethod(nameof(ValueConverterCollection.ConvertFromDb), new[] { typeof(object), typeof(Type) });
+        private static readonly MethodInfo _hasConverterMethod = typeof(ValueConverterCollection).GetMethod(nameof(ValueConverterCollection.HasConverter), new[] { typeof(Type) });
+
+        private static Expression TryBuildDirectTypedAccessor(Expression readerParam, ConstantExpression indexConst, Type fieldType, Type propType)
+        {
+            var nonNullPropType = Nullable.GetUnderlyingType(propType) ?? propType;
+            bool isNullable = Nullable.GetUnderlyingType(propType) != null;
+
+            if (fieldType == nonNullPropType)
+            {
+                Expression typedCall = null;
+                if (nonNullPropType == typeof(int))
+                    typedCall = Expression.Call(readerParam, _getInt32Method, indexConst);
+                else if (nonNullPropType == typeof(long))
+                    typedCall = Expression.Call(readerParam, _getInt64Method, indexConst);
+                else if (nonNullPropType == typeof(short))
+                    typedCall = Expression.Call(readerParam, _getInt16Method, indexConst);
+                else if (nonNullPropType == typeof(byte))
+                    typedCall = Expression.Call(readerParam, _getByteMethod, indexConst);
+                else if (nonNullPropType == typeof(double))
+                    typedCall = Expression.Call(readerParam, _getDoubleMethod, indexConst);
+                else if (nonNullPropType == typeof(float))
+                    typedCall = Expression.Call(readerParam, _getFloatMethod, indexConst);
+                else if (nonNullPropType == typeof(decimal))
+                    typedCall = Expression.Call(readerParam, _getDecimalMethod, indexConst);
+                else if (nonNullPropType == typeof(bool))
+                    typedCall = Expression.Call(readerParam, _getBooleanMethod, indexConst);
+                else if (nonNullPropType == typeof(DateTime))
+                    typedCall = Expression.Call(readerParam, _getDateTimeMethod, indexConst);
+                else if (nonNullPropType == typeof(Guid))
+                    typedCall = Expression.Call(readerParam, _getGuidMethod, indexConst);
+                else if (nonNullPropType == typeof(string))
+                    return Expression.Call(readerParam, _getStringMethod, indexConst);
+
+                if (typedCall != null)
+                {
+                    return isNullable ? Expression.Convert(typedCall, propType) : typedCall;
+                }
+            }
+
+            return null;
+        }
+
         private static Func<IDataReader, ValueConverterCollection, object> BuildMaterializer(Type targetType, IDataReader reader)
         {
             var ctor = targetType.GetConstructor(Type.EmptyTypes);
@@ -194,14 +250,10 @@ namespace ZeroData.Sql.Execution
                     .Where(p => p.CanWrite && p.GetIndexParameters().Length == 0)
                     .ToList();
 
-                var isDbNullMethod = typeof(IDataRecord).GetMethod(nameof(IDataRecord.IsDBNull), new[] { typeof(int) });
-                var getValueMethod = typeof(IDataRecord).GetMethod(nameof(IDataRecord.GetValue), new[] { typeof(int) });
-                var convertFromDbMethod = typeof(ValueConverterCollection).GetMethod(nameof(ValueConverterCollection.ConvertFromDb), new[] { typeof(object), typeof(Type) });
-                var hasConverterMethod = typeof(ValueConverterCollection).GetMethod(nameof(ValueConverterCollection.HasConverter), new[] { typeof(Type) });
-
                 for (int i = 0; i < reader.FieldCount; i++)
                 {
                     var colName = reader.GetName(i);
+                    var fieldType = reader.GetFieldType(i);
                     PropertyInfo matchedProp = null;
 
                     if (mapping != null)
@@ -227,21 +279,23 @@ namespace ZeroData.Sql.Execution
                     var propType = matchedProp.PropertyType;
                     var propTypeConst = Expression.Constant(propType);
 
-                    var isDbNullExpr = Expression.Call(readerParam, isDbNullMethod, indexConst);
-                    var rawValExpr = Expression.Call(readerParam, getValueMethod, indexConst);
+                    var isDbNullExpr = Expression.Call(readerParam, _isDbNullMethod, indexConst);
+                    var rawValExpr = Expression.Call(readerParam, _getValueMethod, indexConst);
 
-                    var directConvertExpr = BuildDirectConvertExpression(rawValExpr, propType);
+                    // Zero-alloc fast path: direct typed accessor if fieldType matches propType
+                    var directTypedExpr = TryBuildDirectTypedAccessor(readerParam, indexConst, fieldType, propType);
+                    var valueExpr = directTypedExpr ?? BuildDirectConvertExpression(rawValExpr, propType);
 
                     var hasConverterCheck = Expression.AndAlso(
                         Expression.NotEqual(convertersParam, Expression.Constant(null, typeof(ValueConverterCollection))),
-                        Expression.Call(convertersParam, hasConverterMethod, propTypeConst)
+                        Expression.Call(convertersParam, _hasConverterMethod, propTypeConst)
                     );
 
                     var convertWithConverter = Expression.Convert(
-                        Expression.Call(convertersParam, convertFromDbMethod, rawValExpr, propTypeConst),
+                        Expression.Call(convertersParam, _convertFromDbMethod, rawValExpr, propTypeConst),
                         propType);
 
-                    var resolvedValueExpr = Expression.Condition(hasConverterCheck, convertWithConverter, directConvertExpr);
+                    var resolvedValueExpr = Expression.Condition(hasConverterCheck, convertWithConverter, valueExpr);
 
                     var assignPropExpr = Expression.Assign(Expression.Property(instanceVar, matchedProp), resolvedValueExpr);
                     var conditionExpr = Expression.IfThen(Expression.Not(isDbNullExpr), assignPropExpr);

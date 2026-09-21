@@ -231,91 +231,145 @@ namespace ZeroData.Core
 
         private sealed class IntColumnAppender : BaseColumnAppender<int>
         {
+            private bool _useFallback;
             public IntColumnAppender(string name) : base(name) { }
             public override void AppendFromReader(IDataReader reader, int ordinal)
             {
-                if (reader.IsDBNull(ordinal)) MarkNull();
-                else AppendValid(FastConvert.AsInt(reader.GetValue(ordinal), 0));
+                if (reader.IsDBNull(ordinal)) { MarkNull(); return; }
+                if (!_useFallback)
+                {
+                    try { AppendValid(reader.GetInt32(ordinal)); return; }
+                    catch { _useFallback = true; }
+                }
+                AppendValid(FastConvert.AsInt(reader.GetValue(ordinal), 0));
             }
         }
 
         private sealed class LongColumnAppender : BaseColumnAppender<long>
         {
+            private bool _useFallback;
             public LongColumnAppender(string name) : base(name) { }
             public override void AppendFromReader(IDataReader reader, int ordinal)
             {
-                if (reader.IsDBNull(ordinal)) MarkNull();
-                else AppendValid(FastConvert.AsLong(reader.GetValue(ordinal), 0L));
+                if (reader.IsDBNull(ordinal)) { MarkNull(); return; }
+                if (!_useFallback)
+                {
+                    try { AppendValid(reader.GetInt64(ordinal)); return; }
+                    catch { _useFallback = true; }
+                }
+                AppendValid(FastConvert.AsLong(reader.GetValue(ordinal), 0L));
             }
         }
 
         private sealed class DoubleColumnAppender : BaseColumnAppender<double>
         {
+            private bool _useFallback;
             public DoubleColumnAppender(string name) : base(name) { }
             public override void AppendFromReader(IDataReader reader, int ordinal)
             {
-                if (reader.IsDBNull(ordinal)) MarkNull();
-                else AppendValid(FastConvert.AsDouble(reader.GetValue(ordinal), 0.0));
+                if (reader.IsDBNull(ordinal)) { MarkNull(); return; }
+                if (!_useFallback)
+                {
+                    try { AppendValid(reader.GetDouble(ordinal)); return; }
+                    catch { _useFallback = true; }
+                }
+                AppendValid(FastConvert.AsDouble(reader.GetValue(ordinal), 0.0));
             }
         }
 
         private sealed class FloatColumnAppender : BaseColumnAppender<float>
         {
+            private bool _useFallback;
             public FloatColumnAppender(string name) : base(name) { }
             public override void AppendFromReader(IDataReader reader, int ordinal)
             {
-                if (reader.IsDBNull(ordinal)) MarkNull();
-                else AppendValid((float)FastConvert.AsDouble(reader.GetValue(ordinal), 0.0));
+                if (reader.IsDBNull(ordinal)) { MarkNull(); return; }
+                if (!_useFallback)
+                {
+                    try { AppendValid(reader.GetFloat(ordinal)); return; }
+                    catch { _useFallback = true; }
+                }
+                AppendValid((float)FastConvert.AsDouble(reader.GetValue(ordinal), 0.0));
             }
         }
 
         private sealed class DecimalColumnAppender : BaseColumnAppender<decimal>
         {
+            private bool _useFallback;
             public DecimalColumnAppender(string name) : base(name) { }
             public override void AppendFromReader(IDataReader reader, int ordinal)
             {
-                if (reader.IsDBNull(ordinal)) MarkNull();
-                else AppendValid(FastConvert.AsDecimal(reader.GetValue(ordinal), 0m));
+                if (reader.IsDBNull(ordinal)) { MarkNull(); return; }
+                if (!_useFallback)
+                {
+                    try { AppendValid(reader.GetDecimal(ordinal)); return; }
+                    catch { _useFallback = true; }
+                }
+                AppendValid(FastConvert.AsDecimal(reader.GetValue(ordinal), 0m));
             }
         }
 
         private sealed class BoolColumnAppender : BaseColumnAppender<bool>
         {
+            private bool _useFallback;
             public BoolColumnAppender(string name) : base(name) { }
             public override void AppendFromReader(IDataReader reader, int ordinal)
             {
-                if (reader.IsDBNull(ordinal)) MarkNull();
-                else AppendValid(FastConvert.AsBool(reader.GetValue(ordinal), false));
+                if (reader.IsDBNull(ordinal)) { MarkNull(); return; }
+                if (!_useFallback)
+                {
+                    try { AppendValid(reader.GetBoolean(ordinal)); return; }
+                    catch { _useFallback = true; }
+                }
+                AppendValid(FastConvert.AsBool(reader.GetValue(ordinal), false));
             }
         }
 
         private sealed class DateTimeColumnAppender : BaseColumnAppender<DateTime>
         {
+            private bool _useFallback;
             public DateTimeColumnAppender(string name) : base(name) { }
             public override void AppendFromReader(IDataReader reader, int ordinal)
             {
-                if (reader.IsDBNull(ordinal)) MarkNull();
-                else AppendValid(FastConvert.AsDateTime(reader.GetValue(ordinal), default));
+                if (reader.IsDBNull(ordinal)) { MarkNull(); return; }
+                if (!_useFallback)
+                {
+                    try { AppendValid(reader.GetDateTime(ordinal)); return; }
+                    catch { _useFallback = true; }
+                }
+                AppendValid(FastConvert.AsDateTime(reader.GetValue(ordinal), default));
             }
         }
 
         private sealed class GuidColumnAppender : BaseColumnAppender<Guid>
         {
+            private bool _useFallback;
             public GuidColumnAppender(string name) : base(name) { }
             public override void AppendFromReader(IDataReader reader, int ordinal)
             {
-                if (reader.IsDBNull(ordinal)) MarkNull();
-                else AppendValid(FastConvert.AsGuid(reader.GetValue(ordinal), Guid.Empty));
+                if (reader.IsDBNull(ordinal)) { MarkNull(); return; }
+                if (!_useFallback)
+                {
+                    try { AppendValid(reader.GetGuid(ordinal)); return; }
+                    catch { _useFallback = true; }
+                }
+                AppendValid(FastConvert.AsGuid(reader.GetValue(ordinal), Guid.Empty));
             }
         }
 
         private sealed class StringColumnAppender : BaseColumnAppender<string>
         {
+            private bool _useFallback;
             public StringColumnAppender(string name) : base(name) { }
             public override void AppendFromReader(IDataReader reader, int ordinal)
             {
-                if (reader.IsDBNull(ordinal)) MarkNull();
-                else AppendValid(reader.GetString(ordinal));
+                if (reader.IsDBNull(ordinal)) { MarkNull(); return; }
+                if (!_useFallback)
+                {
+                    try { AppendValid(reader.GetString(ordinal)); return; }
+                    catch { _useFallback = true; }
+                }
+                AppendValid(reader.GetValue(ordinal)?.ToString() ?? string.Empty);
             }
         }
 
