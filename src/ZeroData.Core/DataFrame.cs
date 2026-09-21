@@ -104,6 +104,90 @@ namespace ZeroData.Core
 
         public RowEnumerable Rows => new RowEnumerable(this);
 
+        /// <summary>
+        /// Creates an independent clone of this DataFrame with deep cloned columns.
+        /// </summary>
+        public DataFrame Clone()
+        {
+            var df = new DataFrame();
+            foreach (var colName in _columnOrder)
+            {
+                df.AddColumn(_columns[colName].Clone());
+            }
+            return df;
+        }
+
+        /// <summary>
+        /// Converts this DataFrame into a LazyFrame for deferred, optimized query execution (Predicate &amp; Projection Pushdown).
+        /// </summary>
+        public LazyFrame Lazy() => new LazyFrame(this);
+
+        /// <summary>
+        /// Compresses an existing DataColumn&lt;string&gt; in-place into a dictionary-encoded StringDictionaryColumn,
+        /// reducing memory consumption by up to 90% while preserving row order and null semantics.
+        /// </summary>
+        public void Categorize(string columnName)
+        {
+            var col = GetColumn(columnName);
+            if (col is DataColumn<string> strCol)
+            {
+                var catCol = StringDictionaryColumn.FromDataColumn(strCol);
+                _columns[columnName] = catCol;
+            }
+        }
+
+        /// <summary>
+        /// <summary>
+        /// Automatically categorizes all string columns whose cardinality satisfies the ratio and threshold conditions.
+        /// </summary>
+        /// <param name="maxUniqueRatio">Maximum ratio of unique strings to total rows (e.g. 0.5 means <= 50% unique).</param>
+        /// <param name="maxUniqueThreshold">Maximum absolute count of unique strings allowed.</param>
+        /// <returns>The number of columns converted to StringDictionaryColumn.</returns>
+        public int CategorizeAllStrings(double maxUniqueRatio = 0.5, int maxUniqueThreshold = 50000)
+        {
+            if (RowCount == 0) return 0;
+            int converted = 0;
+            int maxAllowedUnique = Math.Min(maxUniqueThreshold, Math.Max(1, (int)Math.Ceiling(RowCount * maxUniqueRatio)));
+
+            foreach (var name in _columnOrder.ToList())
+            {
+                var col = _columns[name];
+                if (col is DataColumn<string> strCol)
+                {
+                    var uniqueSet = new HashSet<string>(StringComparer.Ordinal);
+                    var raw = strCol.RawData;
+                    bool exceed = false;
+                    for (int i = 0; i < strCol.Length; i++)
+                    {
+                        if (strCol.HasNulls && strCol.IsNull(i)) continue;
+                        var v = raw[i];
+                        if (v != null)
+                        {
+                            uniqueSet.Add(v);
+                            if (uniqueSet.Count > maxAllowedUnique)
+                            {
+                                exceed = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!exceed && uniqueSet.Count > 0)
+                    {
+                        Categorize(name);
+                        converted++;
+                    }
+                }
+            }
+            return converted;
+        }
+
+        /// <summary>
+        /// Automatically categorizes all string columns whose cardinality is below the absolute threshold.
+        /// </summary>
+        public int CategorizeAllStrings(int maxUniqueThreshold)
+            => CategorizeAllStrings(1.0, maxUniqueThreshold);
+
         #region Slicing & Filtering
 
         public DataFrame Slice(int start, int length)
