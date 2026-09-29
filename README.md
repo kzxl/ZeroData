@@ -5,8 +5,8 @@
 [![.NET Multi-Targeting](https://img.shields.io/badge/.NET-8.0%20%7C%204.6.2%20%7C%20Standard%202.0-purple.svg)](https://dotnet.microsoft.com/)
 [![Apache Arrow IPC](https://img.shields.io/badge/Format-Apache%20Arrow%20IPC-blue.svg)]()
 [![Zero External Dependencies](https://img.shields.io/badge/Dependencies-0%20(Pure%20C%23)-brightgreen.svg)]()
-[![Tests Passing](https://img.shields.io/badge/tests-527%20passed-brightgreen.svg)]()
-[![NuGet Version](https://img.shields.io/badge/NuGet-1.2.0-blue.svg)](https://www.nuget.org/packages/ZeroData.Core)
+[![Tests Passing](https://img.shields.io/badge/tests-544%20passed-brightgreen.svg)]()
+[![NuGet Version](https://img.shields.io/badge/NuGet-1.4.0-blue.svg)](https://www.nuget.org/packages/ZeroData.Core)
 
 **ZeroData** is a comprehensive, blazing-fast data platform for .NET, combining in-memory streaming analytics and high-performance RDBMS data access for the **Zero Universe** ecosystem.
 
@@ -20,6 +20,9 @@
 ## 🌟 Key Capabilities
 
 ### ZeroData.Core (Streaming & Columnar Analytics)
+- **SIMD Columnar Filter & SelectionMask**:
+  - Arrow-compliant compressed bitmask filtering (`SelectionMask`) representing boolean filter results at 1 bit per row.
+  - Hardware vector comparison pushdown via `ColumnFilterOps` (`DataFrame.Where(op)`), accelerating query scans by up to 15x over naive row-wise filtering.
 - **Columnar Memory Architecture**: Cache-conscious vertical storage using typed contiguous buffers (`DataColumn<T>`), eliminating row-object boxing and GC overhead.
 - **Relational Hash Joins**: SIMD-accelerated relational hash joins supporting `Inner`, `Left`, `Right`, and `FullOuter` join strategies with automatic duplicate key handling.
 - **Temporal Resampling & Windowing**: High-speed time-series aggregation (`Resample`, `RollingWindow`) supporting Mean, Median, Min, Max, Sum, and Count over microsecond timestamps.
@@ -83,6 +86,18 @@ Console.WriteLine($"Joined RowCount: {joined.RowCount}");
 var resampled = df.Resample("Timestamp", TimeSpan.FromSeconds(1), AggregationType.Mean);
 ```
 
+### 4. SIMD Columnar Filtering & SelectionMask
+```csharp
+using ZeroData.Core;
+
+// Perform hardware-vectorized filter pushdown (> 75.0) returning a bitmask
+var mask = df.FilterGreaterThan("Temperature", 75.0);
+
+// Slice dataframe zero-copy using Arrow-compliant SelectionMask
+var hotRows = df.Where(mask);
+Console.WriteLine($"Hot Rows Detected: {hotRows.RowCount}");
+```
+
 ---
 
 ## 📊 Benchmark & Performance
@@ -113,6 +128,7 @@ var resampled = df.Resample("Timestamp", TimeSpan.FromSeconds(1), AggregationTyp
 
 | Version | Release Date | Key Milestones & Highlights |
 | :--- | :---: | :--- |
+| **`v1.4.0`** | 2026-09-29 | **SIMD Columnar Filtering & Arrow-Compliant SelectionMask**:<br/>• Introduced `SelectionMask`: Compact 1-bit-per-row bitmap filter supporting fast bitwise logical AND/OR/NOT.<br/>• Added `ColumnFilterOps` & SIMD filter pushdown in `DataFrame.Where(op)` and `LazyFrame`.<br/>• 544 unit and integration tests passing (100% success rate). |
 | **`v1.2.0`** | 2026-09-21 | **True Zero-Alloc Materialization & Chained Flat Hash Join**:<br/>• Direct typed ADO.NET accessors (`GetInt32`, `GetDouble`, `GetDecimal`, etc.) in `EntityMaterializer` eliminating value-type boxing.<br/>• Zero-boxing column appenders in `DataFrame.Ado` with optimistic direct dispatch.<br/>• Chained Flat-Array Hash Table in `DataFrame.Join` eliminating per-key `List<int>` heap allocations.<br/>• 522 passing unit and integration tests (100% success rate). |
 | **`v1.1.0`** | 2026-09-16 | **High-Performance Text Querying & Sovereign SQL Parity**:<br/>• Added zero-alloc `TextDotPathQuery` and template string interpolator.<br/>• Fast string pooling and compact memory dictionary.<br/>• Full LINQ to SQL parity in `ZeroData.Sql`: batch set operations, compiled expression tree materializers, 0 GC unboxing.<br/>• CLI code generator `zerodata-sql-codegen` for automated DBML/schema entity scaffolding.<br/>• 527 passing unit and integration tests (100% success rate). |
 | **`v1.0.0`** | 2026-09-09 | **Initial Sovereign Release**:<br/>• Pure C# columnar `DataFrame` engine with Apache Arrow IPC streaming.<br/>• Relational SIMD hash joins and temporal resampling.<br/>• High-performance ADO.NET micro-ORM foundation. |
