@@ -210,6 +210,12 @@ namespace ZeroData.Core
             return df;
         }
 
+        public DataFrame Filter(SelectionMask mask)
+        {
+            if (mask == null) throw new ArgumentNullException(nameof(mask));
+            return Filter(mask.ToIndices());
+        }
+
         public DataFrame Where<T>(string columnName, Func<T, bool> predicate)
         {
             var col = Column<T>(columnName);
@@ -224,6 +230,20 @@ namespace ZeroData.Core
             }
 
             return Filter(matching.ToArray());
+        }
+
+        public DataFrame Where<T>(string columnName, FilterOp op, T threshold)
+        {
+            var col = Column<T>(columnName);
+            var indices = col.GetMatchingIndices(op, threshold);
+            return Filter(indices);
+        }
+
+        public DataFrame WhereBetween<T>(string columnName, T low, T high, bool inclusive = true)
+        {
+            var col = Column<T>(columnName);
+            var indices = col.GetMatchingIndicesBetween(low, high, inclusive);
+            return Filter(indices);
         }
 
         public DataFrame OrderBy<TKey>(string columnName, bool ascending = true) where TKey : IComparable<TKey>

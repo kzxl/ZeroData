@@ -146,6 +146,54 @@ namespace ZeroData.Core
         }
 
         /// <summary>
+        /// Appends a vectorized SIMD filter operation to the query plan.
+        /// </summary>
+        public LazyFrame Filter<T>(string columnName, FilterOp op, T threshold)
+        {
+            var newNodes = new List<ILazyPlanNode>(_planNodes);
+            newNodes.Add(new LazyFilterNode(columnName, df =>
+            {
+                var col = df.GetColumn(columnName);
+                if (col is DataColumn<T> typedCol)
+                {
+                    return typedCol.GetMatchingIndices(op, threshold);
+                }
+
+                // Fallback for non-generic or converted types
+                var convertedCol = df.Column<T>(columnName);
+                return convertedCol.GetMatchingIndices(op, threshold);
+            }));
+
+            return new LazyFrame(_source, newNodes);
+        }
+
+        public LazyFrame Where<T>(string columnName, FilterOp op, T threshold) => Filter(columnName, op, threshold);
+
+        /// <summary>
+        /// Appends a vectorized SIMD range filter to the query plan.
+        /// </summary>
+        public LazyFrame FilterBetween<T>(string columnName, T low, T high, bool inclusive = true)
+        {
+            var newNodes = new List<ILazyPlanNode>(_planNodes);
+            newNodes.Add(new LazyFilterNode(columnName, df =>
+            {
+                var col = df.GetColumn(columnName);
+                if (col is DataColumn<T> typedCol)
+                {
+                    return typedCol.GetMatchingIndicesBetween(low, high, inclusive);
+                }
+
+                var convertedCol = df.Column<T>(columnName);
+                return convertedCol.GetMatchingIndicesBetween(low, high, inclusive);
+            }));
+
+            return new LazyFrame(_source, newNodes);
+        }
+
+        public LazyFrame WhereBetween<T>(string columnName, T low, T high, bool inclusive = true)
+            => FilterBetween(columnName, low, high, inclusive);
+
+        /// <summary>
         /// Synonym for Filter.
         /// </summary>
         public LazyFrame Where<T>(string columnName, Func<T, bool> predicate) => Filter(columnName, predicate);
