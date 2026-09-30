@@ -4,6 +4,11 @@ using ZeroPrimitives;
 namespace ZeroData.Core
 {
     /// <summary>
+    /// Delegate for zero-allocation row evaluation using RowView ref struct.
+    /// </summary>
+    public delegate bool RowPredicate(RowView row);
+
+    /// <summary>
     /// Zero-allocation, stack-only view representing a single row in a DataFrame.
     /// Eliminates per-row object allocations and boxing when iterating over millions of records.
     /// </summary>
