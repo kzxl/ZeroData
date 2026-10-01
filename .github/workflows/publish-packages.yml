@@ -34,6 +34,7 @@ jobs:
         run: |
           dotnet pack src/ZeroData.Core/ZeroData.Core.csproj -c Release -o nupkgs
           dotnet pack src/ZeroData.Sql/ZeroData.Sql.csproj -c Release -o nupkgs
+          dotnet pack src/ZeroData.Sql.CodeGen/ZeroData.Sql.CodeGen.csproj -c Release -o nupkgs
 
       # 1. Push to GitHub Packages
       - name: Push to GitHub Packages
